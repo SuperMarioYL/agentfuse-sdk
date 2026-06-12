@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentfuse"
+version = "0.1.0"
+description = "An enforcing per-task spend circuit-breaker for autonomous agents — halts an Agent before it burns your budget. 给自主 Agent 装的花费保险丝。"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "supermario_leo" }]
+keywords = ["agent", "llm", "budget", "circuit-breaker", "litellm", "cost-control", "spend-guardrail"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "litellm>=1.40",
+    "tiktoken>=0.7",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+agentfuse = "agentfuse.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/supermario_leo/agentfuse"
+Repository = "https://github.com/supermario_leo/agentfuse"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentfuse"]
