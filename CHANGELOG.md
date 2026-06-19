@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-19
+
+Hardening the fuse so it can't silently disable itself, plus two new ceilings
+and an opt-in spend record. Every change is still an *executive* guardrail (it
+halts), not a chart.
+
+### Changed
+
+- **Fail-closed on unpriced models** (`pricing.estimate_prompt_cost` /
+  `estimate_call`) — a model missing from `litellm.model_cost` used to estimate
+  `$0.00`, which silently passed *every* call on an unknown / self-hosted model:
+  the fuse no-op'd exactly when runaway risk was highest. There is now an
+  `on_unpriced` policy, defaulting to `'block'` (raise the new
+  `UnpricedModelError`). Opt into `'fallback'` (price at a conservative
+  per-token rate) or `'warn-pass'` (the old pass-through) per task via
+  `Fuse(..., on_unpriced=...)` / `@fuse(on_unpriced=...)` / `task(...)`.
+
+### Added
+
+- **Token ceiling** (`Budget(ceiling_tokens=...)`, `Fuse(max_tokens=...)`) —
+  closes the m2 spec gap: a task can be capped by USD, by cumulative tokens, or
+  by whichever trips first. `spent_tokens` / `remaining_tokens()` are tracked
+  alongside USD and surfaced in `snapshot()`.
+- **Per-call hard cap** (`single_call_ceiling=...`) — an optional per-call USD
+  ceiling that trips independently of the cumulative ledger, so one oversized
+  prompt cannot blow the whole budget in a single shot.
+- **Opt-in spend record** (`agentfuse.store`, `record_task` / `read_records` /
+  `last_record`) — an append-only JSONL log of finished tasks (name, ceiling,
+  spent, tripped?, timestamp, tokens). `agentfuse status --log <path>` now
+  summarises the last task's REAL spend across processes. Execution-adjacent
+  record-keeping only — no visualization, no monitoring service, no cross-run
+  budget rollover.
+- `UnpricedModelError` exception; `BudgetExceeded` now carries a `limit_kind`
+  (`'usd'` / `'tokens'` / `'single_call'`) plus token-ledger context so the trip
+  banner and message say *which* ceiling blew.
+
+### Hardened
+
+- **Reject zero / non-finite ceilings** — `Budget.__init__` now requires a
+  finite `ceiling_usd > 0` (was only `>= 0`), so `0.0` / `NaN` / `±inf` ceilings
+  no longer produce a fuse state indistinguishable from "off". The same
+  validation is surfaced through `Fuse.__init__` and `fuse()` / `fused()`.
+
 ## [0.1.0] - 2026-06-13
 
 First public release — an *enforcing* per-task spend circuit-breaker for
@@ -45,5 +88,6 @@ the money is never spent.
   `spent` / `ceiling` / `would_spend` fields.
 - 30 tests (`test_budget` ×16, `test_fuse` ×14); CI on Python 3.11 / 3.12.
 
-[Unreleased]: https://github.com/supermario_leo/agentfuse/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/supermario_leo/agentfuse/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/supermario_leo/agentfuse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/supermario_leo/agentfuse/releases/tag/v0.1.0

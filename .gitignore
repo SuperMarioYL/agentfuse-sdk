@@ -52,3 +52,5 @@ CLAUDE.md
 .builder_context.md
 .build_metadata.yaml
 .build_metadata.slices.yaml
+.build_metadata*.yaml
+BUILD_BLOCKED_*.md

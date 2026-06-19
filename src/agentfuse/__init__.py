@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Public API surface. `exceptions` ships in stage A; `Budget`, `gate`, and `wrap`
 # are created in stages B/C. The cross-module imports are guarded so that
 # `import agentfuse` succeeds even before those modules land.
-from agentfuse.exceptions import AgentFuseError, BudgetExceeded
+from agentfuse.exceptions import AgentFuseError, BudgetExceeded, UnpricedModelError
 
 try:  # stage B: per-task ledger + pre-call gate
     from agentfuse.budget import Budget, gate
@@ -33,10 +33,19 @@ except ImportError:  # pragma: no cover - wired in stage C
     completion = None  # type: ignore[assignment]
     acompletion = None  # type: ignore[assignment]
 
+try:  # v0.2: opt-in append-only spend record
+    from agentfuse.store import TaskRecord, last_record, read_records, record_task
+except ImportError:  # pragma: no cover
+    TaskRecord = None  # type: ignore[assignment]
+    record_task = None  # type: ignore[assignment]
+    read_records = None  # type: ignore[assignment]
+    last_record = None  # type: ignore[assignment]
+
 __all__ = [
     "__version__",
     "AgentFuseError",
     "BudgetExceeded",
+    "UnpricedModelError",
     "Budget",
     "gate",
     # ergonomic API
@@ -51,4 +60,9 @@ __all__ = [
     "uninstall",
     "completion",
     "acompletion",
+    # opt-in spend record
+    "TaskRecord",
+    "record_task",
+    "read_records",
+    "last_record",
 ]
