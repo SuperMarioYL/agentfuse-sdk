@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 360" width="880" height="360"
+     font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+     role="img" aria-label="AgentFuse data flow: an agent call enters AgentFuse's own wrapper, which estimates an upper-bound cost, then gates it against the per-task budget — if it would cross the ceiling the fuse trips and the call is never sent, otherwise it delegates to the real litellm and commits the real cost back to the ledger">
+  <defs>
+    <marker id="ah-d" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5A5A66"/></marker>
+    <marker id="ah-trip-d" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#E8A94E"/></marker>
+  </defs>
+  <rect x="0" y="0" width="880" height="360" fill="#1D1D1F"/>
+
+  <!-- per-task budget window frame -->
+  <rect x="232" y="26" width="448" height="246" rx="18" fill="none" stroke="#F87171" stroke-opacity="0.45" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="252" y="47" font-size="13" font-weight="600" fill="#F4A9A9">with Fuse(max_spend_usd) — per-task USD ceiling</text>
+
+  <!-- connectors -->
+  <g stroke="#3A3A44" stroke-width="1.6" fill="none">
+    <line x1="206" y1="150" x2="252" y2="150" marker-end="url(#ah-d)"/>           <!-- agent -> wrap -->
+    <line x1="356" y1="150" x2="402" y2="150" marker-end="url(#ah-d)"/>           <!-- wrap -> estimate -->
+    <line x1="506" y1="150" x2="552" y2="150" marker-end="url(#ah-d)"/>           <!-- estimate -> gate -->
+    <line x1="660" y1="150" x2="734" y2="150" marker-end="url(#ah-d)"/>           <!-- gate -> litellm (allow) -->
+  </g>
+  <text x="690" y="142" text-anchor="middle" font-size="10.5" font-weight="600" fill="#A1A1A8">within budget</text>
+
+  <!-- gate -> TRIP (down), amber/red path -->
+  <g stroke="#E8A94E" stroke-width="1.8" fill="none">
+    <path d="M606 192 L606 252" marker-end="url(#ah-trip-d)"/>
+  </g>
+  <text x="618" y="226" font-size="10.5" font-weight="600" fill="#F0BE74">over budget</text>
+
+  <!-- commit feedback: litellm -> back to budget ledger (dashed, returns) -->
+  <g stroke="#3A3A44" stroke-width="1.5" stroke-dasharray="5 4" fill="none">
+    <path d="M796 192 L796 312 L606 312 L606 192" marker-end="url(#ah-d)"/>
+  </g>
+  <text x="700" y="306" text-anchor="middle" font-size="10.5" font-weight="600" fill="#A1A1A8">commit real Usage cost</text>
+
+  <!-- (1) Agent code -->
+  <g>
+    <rect x="36" y="110" width="170" height="80" rx="15" fill="#8985FF" fill-opacity="0.16" stroke="#8985FF" stroke-width="1.5"/>
+    <text x="121" y="142" text-anchor="middle" font-size="14" font-weight="600" fill="#B4B1FF">Your Agent</text>
+    <text x="121" y="162" text-anchor="middle" font-size="11" fill="#B4B1FF">litellm.completion(...)</text>
+    <text x="121" y="178" text-anchor="middle" font-size="10.5" fill="#A1A1A8">loops unattended</text>
+  </g>
+
+  <!-- (2) wrap.py -->
+  <g>
+    <rect x="252" y="62" width="104" height="128" rx="14" fill="#F87171" fill-opacity="0.16" stroke="#F87171" stroke-width="1.5"/>
+    <text x="304" y="116" text-anchor="middle" font-size="13" font-weight="600" fill="#F4A9A9">wrap.py</text>
+    <text x="304" y="135" text-anchor="middle" font-size="10.5" fill="#F4A9A9">own wrapper</text>
+    <text x="304" y="150" text-anchor="middle" font-size="10.5" fill="#F4A9A9">— before</text>
+    <text x="304" y="164" text-anchor="middle" font-size="10.5" fill="#F4A9A9">litellm</text>
+  </g>
+
+  <!-- (3) pricing.py estimate -->
+  <g>
+    <rect x="402" y="62" width="104" height="128" rx="14" fill="#FBBF24" fill-opacity="0.16" stroke="#FBBF24" stroke-width="1.5"/>
+    <text x="454" y="110" text-anchor="middle" font-size="13" font-weight="600" fill="#F5CE73">pricing.py</text>
+    <text x="454" y="130" text-anchor="middle" font-size="10.5" fill="#F5CE73">estimate</text>
+    <text x="454" y="144" text-anchor="middle" font-size="10.5" fill="#F5CE73">upper bound</text>
+    <text x="454" y="160" text-anchor="middle" font-size="10" fill="#A1A1A8">tiktoken ×</text>
+    <text x="454" y="173" text-anchor="middle" font-size="10" fill="#A1A1A8">model_cost</text>
+  </g>
+
+  <!-- (4) budget.gate -->
+  <g>
+    <rect x="552" y="62" width="108" height="128" rx="14" fill="#F87171" fill-opacity="0.18" stroke="#F87171" stroke-width="1.6"/>
+    <text x="606" y="108" text-anchor="middle" font-size="13" font-weight="700" fill="#F4A9A9">budget.gate()</text>
+    <text x="606" y="130" text-anchor="middle" font-size="10.5" fill="#F4A9A9">spent + est</text>
+    <text x="606" y="145" text-anchor="middle" font-size="10.5" fill="#F4A9A9">&gt; ceiling ?</text>
+    <text x="606" y="172" text-anchor="middle" font-size="10" fill="#A1A1A8">per-task ledger</text>
+  </g>
+
+  <!-- (5) real litellm -->
+  <g>
+    <rect x="734" y="110" width="110" height="80" rx="15" fill="#2DC79A" fill-opacity="0.12" stroke="#2DC79A" stroke-width="1.5"/>
+    <text x="789" y="146" text-anchor="middle" font-size="13" font-weight="600" fill="#5BE0BC">real</text>
+    <text x="789" y="164" text-anchor="middle" font-size="11.5" fill="#5BE0BC">litellm.completion</text>
+  </g>
+
+  <!-- TRIP outcome -->
+  <g>
+    <rect x="430" y="252" width="352" height="68" rx="15" fill="#F87171" fill-opacity="0.18" stroke="#F87171" stroke-width="1.6"/>
+    <text x="606" y="280" text-anchor="middle" font-size="14" font-weight="700" fill="#F4A9A9">&#128268; FUSE TRIPPED — raise BudgetExceeded</text>
+    <text x="606" y="302" text-anchor="middle" font-size="11" fill="#F4A9A9">call never sent &#8594; money never spent</text>
+  </g>
+</svg>

@@ -57,6 +57,18 @@ AgentFuse is that fuse. Wrap any Agent in an executable budget guardrail before
 you deploy it, and the tail risk of *“one task bankrupts one person”* drops from
 a disaster to a single intercepted log line.
 
+## <img src="https://api.iconify.design/tabler/topology-star-3.svg?color=%23b91c1c" width="20" height="20" align="center" /> Architecture
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
+    <img src="./assets/atlas-light.svg" width="880" alt="An agent call enters AgentFuse's own wrapper, which estimates an upper-bound cost, then gates it against the per-task budget — if it would cross the ceiling the fuse trips and the call is never sent; otherwise it delegates to the real litellm and commits the real cost back to the ledger">
+  </picture>
+</p>
+
+An agent call first enters **AgentFuse's own wrapper** (`wrap.py`, running *before* litellm). `pricing.py` counts prompt tokens with tiktoken and prices them via `litellm.model_cost` to compute an upper-bound estimate, then `budget.gate()` compares *spent + estimate* against this task's USD ceiling. **If it would cross the ceiling, `BudgetExceeded` is raised before the call goes out — 🔌 the fuse trips and the money is never spent**; only within budget does it delegate to the real `litellm.completion`, then commit the confirmed spend from the response's real `Usage` back to the per-task ledger. The whole decision lives inside the `with Fuse(max_spend_usd=…)` budget window.
+
 ## Install
 
 ```bash
@@ -88,21 +100,21 @@ When the next call *would* push cumulative spend past \$5, AgentFuse raises
 > Prefer a decorator? `@agentfuse.fuse(max_spend_usd=5.0)`. Don't want a
 > monkeypatch? Call the guarded `agentfuse.completion(...)` directly.
 
-## Demo
+## <img src="https://api.iconify.design/tabler/photo.svg?color=%23b91c1c" width="20" height="20" align="center" /> Demo
 
-`agentfuse demo` reproduces the runaway loop from that lantian thread and cuts it
+`agentfuse demo` reproduces the runaway loop from that HN thread and cuts it
 off live — **fully offline** (litellm `mock_response`, no API key needed):
 
 ```bash
 agentfuse demo --ceiling 0.50
 ```
 
-<!-- demo.gif is generated from assets/demo.tape via `vhs assets/demo.tape` (see assets/README.md) -->
+<!-- demo.gif is generated from docs/demo.tape via `vhs docs/demo.tape` (see assets/README.md) -->
 <p align="center">
   <img src="assets/demo.gif" alt="Terminal recording of AgentFuse tripping before a runaway Agent crosses its ceiling" width="760" />
 </p>
 
-> 📼 The GIF isn't committed — run `vhs assets/demo.tape` to generate it (see
+> 📼 The GIF isn't committed — run `vhs docs/demo.tape` to generate it (see
 > [assets/README.md](./assets/README.md)). Here is the real output of that command:
 
 <details>
@@ -252,4 +264,4 @@ LiteLLM. https://github.com/supermario_leo/agentfuse
 
 ---
 
-<sub>Incubated from a product brief driven by the <a href="https://github.com/supermario_leo">ai-radar</a> signal scan.</sub>
+<sub>Apache-2.0 © 2026 <a href="https://github.com/supermario_leo">supermario_leo</a></sub>
