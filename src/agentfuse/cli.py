@@ -35,14 +35,26 @@ def main(ctx: click.Context) -> None:
 
 
 @main.command()
-def status() -> None:
+@click.option(
+    "--log",
+    "log_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Path to an opt-in JSONL spend record (see agentfuse.record_task). "
+    "When given, summarise the last recorded task's REAL spend.",
+)
+def status(log_path: str | None) -> None:
     """Show the current task ledger summary.
 
-    v0.1 keeps no persistent spend store (out of scope), so there is no
-    cross-process "active task" to read from outside a running process. This
-    prints the configured default ceiling and explains where the live ledger
-    actually lives.
+    Without ``--log`` this is a static reminder that the live ledger lives only
+    inside a running ``with Fuse(...)`` scope. With ``--log <path>`` it reads the
+    opt-in append-only JSONL spend record (written by ``agentfuse.record_task``)
+    and summarises the last finished task's REAL spend across processes.
     """
+    if log_path is not None:
+        _status_from_log(log_path)
+        return
+
     click.echo("AgentFuse status")
     click.echo("=" * 40)
     click.echo("active task : none")
@@ -53,13 +65,46 @@ def status() -> None:
     click.echo("")
     click.echo(
         "AgentFuse is an in-process library: the live ledger only exists inside a\n"
-        "running `with Fuse(max_spend_usd=...)` scope and is not persisted between\n"
-        "runs (a persistent spend store is out of scope for v0.1). Inspect a task's\n"
-        "spend in-process via the Budget returned by `task(...)` / `Fuse(...)`,\n"
-        "e.g. `print(budget.snapshot())`."
+        "running `with Fuse(max_spend_usd=...)` scope. For cross-process history,\n"
+        "opt into the append-only spend record via `agentfuse.record_task(budget,\n"
+        "tripped=..., log_path=...)` and read it back with `agentfuse status --log\n"
+        "<path>`. Inspect a live task in-process via `print(budget.snapshot())`."
     )
     click.echo("")
     click.echo("Try `agentfuse demo` to watch the fuse trip on a runaway agent.")
+
+
+def _status_from_log(log_path: str) -> None:
+    """Render the last recorded task from an opt-in JSONL spend record."""
+    from agentfuse.store import read_records
+
+    records = read_records(log_path)
+    click.echo("AgentFuse status")
+    click.echo("=" * 40)
+    click.echo(f"spend record : {log_path}")
+    if not records:
+        click.echo("last task    : none recorded yet")
+        click.echo("")
+        click.echo(
+            "No records found. Write one with `agentfuse.record_task(budget, "
+            "tripped=..., log_path=...)`\nafter a `with Fuse(...)` block finishes."
+        )
+        return
+
+    last = records[-1]
+    state = "TRIPPED 🔌" if last.tripped else "ok"
+    click.echo(f"tasks logged : {len(records)}")
+    click.echo(f"last task    : {last.name}  [{state}]")
+    click.echo(
+        f"  spent      : ${last.spent_usd:.4f} / ${last.ceiling_usd:.2f} ceiling"
+    )
+    if last.ceiling_tokens is not None:
+        click.echo(
+            f"  tokens     : {last.spent_tokens:,} / {last.ceiling_tokens:,}"
+        )
+    elif last.spent_tokens:
+        click.echo(f"  tokens     : {last.spent_tokens:,}")
+    click.echo(f"  finished   : {last.ts}")
 
 
 @main.command()
