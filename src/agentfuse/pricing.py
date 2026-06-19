@@ -13,18 +13,25 @@ Two jobs live here:
 
 Pricing data and token counting come from LiteLLM (``litellm.model_cost``,
 ``litellm.token_counter``, ``litellm.cost_per_token``, ``litellm.completion_cost``)
-with tiktoken as a fallback token counter. Everything degrades gracefully: if a
-model is missing from the price table we estimate ``0.0`` and log a warning rather
-than crash, because a fuse that crashes is worse than a fuse that occasionally
-under-estimates.
+with tiktoken as a fallback token counter.
+
+**Unpriced models.** When a model is missing from ``litellm.model_cost`` the fuse
+cannot price the call. Returning ``0.0`` (the v0.1 behaviour) silently disables
+the circuit-breaker exactly when runaway risk is highest — on self-hosted / custom
+models that are *not* in the table. So v0.2 fails closed by default
+(``on_unpriced='block'`` → raise :class:`~agentfuse.exceptions.UnpricedModelError`).
+Callers can opt into ``'fallback'`` (price at a conservative per-token rate) or
+``'warn-pass'`` (the old pass-through: estimate ``0.0`` and log a warning).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import litellm
+
+from agentfuse.exceptions import UnpricedModelError
 
 logger = logging.getLogger("agentfuse.pricing")
 
@@ -32,6 +39,15 @@ logger = logging.getLogger("agentfuse.pricing")
 # for the pre-call estimate. This is deliberately generous so the gate stays
 # conservative (better to trip a little early than to overshoot the ceiling).
 DEFAULT_MAX_COMPLETION_TOKENS = 1024
+
+# Policy for a model that is not in litellm.model_cost.
+OnUnpriced = Literal["block", "fallback", "warn-pass"]
+DEFAULT_ON_UNPRICED: OnUnpriced = "block"
+
+# Conservative per-token USD rate used by the ``'fallback'`` policy when a model
+# is unpriced. Deliberately high (~frontier-model output pricing) so an unpriced
+# call is over-, never under-, estimated — better to trip early than to overshoot.
+FALLBACK_USD_PER_TOKEN = 1.5e-5
 
 
 def _model_prices(model: str) -> tuple[float, float] | None:
@@ -78,35 +94,77 @@ def count_prompt_tokens(model: str, messages: Sequence[Mapping[str, Any]]) -> in
         return max(1, len(text) // 4)
 
 
-def estimate_prompt_cost(
+def estimate_call(
     model: str,
     messages: Sequence[Mapping[str, Any]],
     max_tokens: int | None = None,
-) -> float:
-    """Estimate an **upper bound** on the USD cost of one call, before sending it.
+    *,
+    on_unpriced: OnUnpriced = DEFAULT_ON_UNPRICED,
+) -> tuple[float, int]:
+    """Estimate ``(usd_upper_bound, token_upper_bound)`` for one call, pre-send.
 
-    The estimate is ``prompt_tokens * input_price`` plus a worst-case completion
-    of ``max_tokens`` (or :data:`DEFAULT_MAX_COMPLETION_TOKENS`) priced at the
-    model's output rate. Returns ``0.0`` (and logs a warning) when ``model`` is
-    not in ``litellm.model_cost``, so an unknown model can never crash the gate.
+    The token bound is ``prompt_tokens`` plus a worst-case completion of
+    ``max_tokens`` (or :data:`DEFAULT_MAX_COMPLETION_TOKENS`). The USD bound
+    prices both halves from ``litellm.model_cost``.
+
+    When ``model`` is not in ``litellm.model_cost`` the behaviour is governed by
+    ``on_unpriced``:
+
+    * ``'block'`` (default) — raise :class:`~agentfuse.exceptions.UnpricedModelError`
+      so the fuse fails closed instead of silently passing the call.
+    * ``'fallback'`` — price every estimated token at
+      :data:`FALLBACK_USD_PER_TOKEN` (a deliberately conservative rate).
+    * ``'warn-pass'`` — log a warning and return ``(0.0, token_bound)`` (the v0.1
+      pass-through; the USD gate cannot block this call).
     """
-    prices = _model_prices(model)
-    if prices is None:
-        logger.warning(
-            "model %r not found in litellm.model_cost; estimating $0.00 "
-            "(the fuse cannot price this call and will not block it)",
-            model,
-        )
-        return 0.0
-
-    input_price, output_price = prices
     prompt_tokens = count_prompt_tokens(model, messages)
     completion_tokens = (
         max_tokens if max_tokens is not None and max_tokens > 0 else DEFAULT_MAX_COMPLETION_TOKENS
     )
+    token_bound = prompt_tokens + completion_tokens
 
+    prices = _model_prices(model)
+    if prices is None:
+        if on_unpriced == "block":
+            raise UnpricedModelError(model)
+        if on_unpriced == "fallback":
+            logger.warning(
+                "model %r not found in litellm.model_cost; pricing %d tokens at the "
+                "conservative fallback rate ($%.2e/token) so the fuse still bounds it",
+                model,
+                token_bound,
+                FALLBACK_USD_PER_TOKEN,
+            )
+            return float(token_bound * FALLBACK_USD_PER_TOKEN), token_bound
+        # warn-pass
+        logger.warning(
+            "model %r not found in litellm.model_cost; estimating $0.00 "
+            "(on_unpriced='warn-pass' — the fuse cannot price this call and will "
+            "not block it on USD)",
+            model,
+        )
+        return 0.0, token_bound
+
+    input_price, output_price = prices
     cost = prompt_tokens * input_price + completion_tokens * output_price
-    return float(cost)
+    return float(cost), token_bound
+
+
+def estimate_prompt_cost(
+    model: str,
+    messages: Sequence[Mapping[str, Any]],
+    max_tokens: int | None = None,
+    *,
+    on_unpriced: OnUnpriced = DEFAULT_ON_UNPRICED,
+) -> float:
+    """Estimate an **upper bound** on the USD cost of one call, before sending it.
+
+    Thin wrapper over :func:`estimate_call` returning only the USD bound. See
+    :func:`estimate_call` for the ``on_unpriced`` policy on models missing from
+    ``litellm.model_cost``.
+    """
+    usd, _tokens = estimate_call(model, messages, max_tokens, on_unpriced=on_unpriced)
+    return usd
 
 
 def actual_cost(response: Any) -> float:
@@ -143,3 +201,27 @@ def actual_cost(response: Any) -> float:
         model,
     )
     return 0.0
+
+
+def actual_tokens(response: Any) -> int:
+    """Return the real total token count of a completed LiteLLM response.
+
+    Reads ``response.usage.total_tokens`` (falling back to
+    ``prompt_tokens + completion_tokens``). Returns ``0`` when the response
+    carries no usable usage, so post-call commit never crashes a finished task.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    total = getattr(usage, "total_tokens", None)
+    if total is not None:
+        try:
+            return int(total)
+        except (TypeError, ValueError):
+            pass
+    prompt = getattr(usage, "prompt_tokens", None)
+    completion = getattr(usage, "completion_tokens", None)
+    try:
+        return int(prompt or 0) + int(completion or 0)
+    except (TypeError, ValueError):
+        return 0

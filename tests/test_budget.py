@@ -140,8 +140,19 @@ def test_estimate_known_model_positive():
     assert cost > 0.0
 
 
-def test_estimate_unknown_model_returns_zero_no_crash():
-    cost = estimate_prompt_cost("totally-made-up-model-xyz", _MESSAGES, max_tokens=256)
+def test_estimate_unknown_model_blocks_by_default():
+    # v0.2: an unpriced model fails closed instead of silently estimating $0.00.
+    from agentfuse.exceptions import UnpricedModelError
+
+    with pytest.raises(UnpricedModelError):
+        estimate_prompt_cost("totally-made-up-model-xyz", _MESSAGES, max_tokens=256)
+
+
+def test_estimate_unknown_model_warn_pass_returns_zero():
+    # The explicit opt-out preserves the old pass-through behaviour.
+    cost = estimate_prompt_cost(
+        "totally-made-up-model-xyz", _MESSAGES, max_tokens=256, on_unpriced="warn-pass"
+    )
     assert cost == 0.0
 
 

@@ -32,7 +32,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
 from agentfuse.budget import Budget
 from agentfuse.exceptions import BudgetExceeded
-from agentfuse.pricing import actual_cost, estimate_prompt_cost
+from agentfuse.pricing import actual_cost, actual_tokens, estimate_call
 
 # The active per-task budget for the current context (thread/async-local).
 _ACTIVE_BUDGET: contextvars.ContextVar[Budget | None] = contextvars.ContextVar(
@@ -60,15 +60,28 @@ def _print_trip_banner(err: BudgetExceeded) -> None:
     """Print the human-facing ``🔌 FUSE TRIPPED`` banner for a tripped fuse.
 
     Composed from the exception's structured fields (not its message, which would
-    duplicate the "FUSE TRIPPED" text) so the emoji-led banner reads cleanly.
+    duplicate the "FUSE TRIPPED" text) so the emoji-led banner reads cleanly. The
+    body varies by which ceiling tripped (cumulative USD, token, or per-call cap).
     """
-    print(
-        f"\n{TRIP_BANNER} — task halted at ${err.spent:.2f} / ${err.ceiling:.2f} "
-        f"ceiling (next call est. +${err.would_spend:.2f} would cross it; "
-        f"call not sent)",
-        file=sys.stderr,
-        flush=True,
-    )
+    if err.limit_kind == "single_call":
+        body = (
+            f"call blocked: est. +${err.would_spend:.2f} exceeds the "
+            f"${err.ceiling:.2f} per-call ceiling (call not sent)"
+        )
+    elif err.limit_kind == "tokens":
+        spent_t = err.spent_tokens or 0
+        ceiling_t = err.ceiling_tokens or 0
+        would_t = err.would_spend_tokens or 0
+        body = (
+            f"task halted at {spent_t:,} / {ceiling_t:,} tokens "
+            f"(next call est. +{would_t:,} tokens would cross it; call not sent)"
+        )
+    else:
+        body = (
+            f"task halted at ${err.spent:.2f} / ${err.ceiling:.2f} ceiling "
+            f"(next call est. +${err.would_spend:.2f} would cross it; call not sent)"
+        )
+    print(f"\n{TRIP_BANNER} — {body}", file=sys.stderr, flush=True)
 
 
 def gate(
@@ -96,9 +109,15 @@ def gate(
         # No fuse installed for this context: do not gate, do not estimate-block.
         return 0.0
 
-    estimate = estimate_prompt_cost(model, messages, max_tokens=max_tokens)
+    estimate, est_tokens = estimate_call(
+        model,
+        messages,
+        max_tokens=max_tokens,
+        on_unpriced=getattr(active, "on_unpriced", "block"),
+    )
     try:
-        active.check(estimate)  # raises BudgetExceeded if it would cross ceiling
+        # raises BudgetExceeded if it would cross the USD / token / per-call ceiling
+        active.check(estimate, est_tokens)
     except BudgetExceeded as err:
         _print_trip_banner(err)
         raise
@@ -117,12 +136,20 @@ def commit_actual(response: Any, *, budget: Budget | None = None) -> float:
     if active is None:
         return 0.0
     cost = actual_cost(response)
-    active.commit(cost)
+    tokens = actual_tokens(response)
+    active.commit(cost, tokens)
     return cost
 
 
 @contextmanager
-def task(ceiling_usd: float, name: str = "task") -> Iterator[Budget]:
+def task(
+    ceiling_usd: float,
+    name: str = "task",
+    *,
+    ceiling_tokens: int | None = None,
+    single_call_ceiling: float | None = None,
+    on_unpriced: str = "block",
+) -> Iterator[Budget]:
     """Scope a per-task spend ceiling for every gated call made inside the block.
 
     Binds a fresh :class:`Budget` to the current context for the duration of the
@@ -135,10 +162,22 @@ def task(ceiling_usd: float, name: str = "task") -> Iterator[Budget]:
         print(budget.snapshot())  # what the task actually spent
 
     Args:
-        ceiling_usd: Hard USD ceiling for this task.
+        ceiling_usd: Hard USD ceiling for this task (finite, > 0).
         name: Human label shown in the ledger / CLI / trip banner.
+        ceiling_tokens: Optional cumulative token ceiling (first-to-trip wins
+            against the USD ceiling).
+        single_call_ceiling: Optional per-call USD hard cap.
+        on_unpriced: Policy for models missing from ``litellm.model_cost`` —
+            ``'block'`` (default, fail closed), ``'fallback'`` (conservative
+            estimate), or ``'warn-pass'`` (v0.1 pass-through).
     """
-    budget = Budget(ceiling_usd=ceiling_usd, name=name)
+    budget = Budget(
+        ceiling_usd=ceiling_usd,
+        name=name,
+        ceiling_tokens=ceiling_tokens,
+        single_call_ceiling=single_call_ceiling,
+        on_unpriced=on_unpriced,
+    )
     token = _ACTIVE_BUDGET.set(budget)
     try:
         yield budget
@@ -153,16 +192,39 @@ class Fuse:
     from §1 of the MVP plan. ``max_spend_usd`` is the public keyword; it maps to
     a per-task :class:`Budget` ceiling. The bound budget is exposed as
     :attr:`budget` once the block is entered.
+
+    Optional guardrails: ``max_tokens`` adds a cumulative token ceiling (trips
+    against the USD ceiling, first-to-trip wins); ``single_call_ceiling`` adds a
+    per-call USD hard cap so one oversized prompt cannot blow the whole budget in
+    one shot; ``on_unpriced`` controls behaviour on models missing from the price
+    table (``'block'`` default, ``'fallback'``, or ``'warn-pass'``).
     """
 
-    def __init__(self, max_spend_usd: float, name: str = "task") -> None:
+    def __init__(
+        self,
+        max_spend_usd: float,
+        name: str = "task",
+        *,
+        max_tokens: int | None = None,
+        single_call_ceiling: float | None = None,
+        on_unpriced: str = "block",
+    ) -> None:
         self.max_spend_usd = max_spend_usd
         self.name = name
+        self.max_tokens = max_tokens
+        self.single_call_ceiling = single_call_ceiling
+        self.on_unpriced = on_unpriced
         self.budget: Budget | None = None
         self._cm: Iterator[Budget] | None = None
 
     def __enter__(self) -> Budget:
-        self._cm = task(self.max_spend_usd, name=self.name)
+        self._cm = task(
+            self.max_spend_usd,
+            name=self.name,
+            ceiling_tokens=self.max_tokens,
+            single_call_ceiling=self.single_call_ceiling,
+            on_unpriced=self.on_unpriced,
+        )
         self.budget = self._cm.__enter__()  # type: ignore[attr-defined]
         return self.budget
 
@@ -176,6 +238,9 @@ def fuse(
     *,
     max_spend_usd: float | None = None,
     name: str | None = None,
+    ceiling_tokens: int | None = None,
+    single_call_ceiling: float | None = None,
+    on_unpriced: str = "block",
 ) -> Callable[[F], F]:
     """Decorator binding a per-call spend ceiling to a function.
 
@@ -187,8 +252,9 @@ def fuse(
         def run_agent():
             ...
 
-    The decorated function's name is used as the budget label unless ``name`` is
-    given.
+    Optional ``ceiling_tokens`` / ``single_call_ceiling`` / ``on_unpriced`` carry
+    the same meaning as on :func:`task` / :class:`Fuse`. The decorated function's
+    name is used as the budget label unless ``name`` is given.
     """
     resolved = ceiling_usd if ceiling_usd is not None else max_spend_usd
     if resolved is None:
@@ -198,7 +264,13 @@ def fuse(
     def decorator(func: F) -> F:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            with task(limit, name=name or getattr(func, "__name__", "task")):
+            with task(
+                limit,
+                name=name or getattr(func, "__name__", "task"),
+                ceiling_tokens=ceiling_tokens,
+                single_call_ceiling=single_call_ceiling,
+                on_unpriced=on_unpriced,
+            ):
                 return func(*args, **kwargs)
 
         return wrapper  # type: ignore[return-value]
