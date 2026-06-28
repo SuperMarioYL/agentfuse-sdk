@@ -38,6 +38,7 @@ from typing import Any, Callable, Mapping, Sequence
 import litellm
 
 from agentfuse.fuse import commit_actual, current_budget, gate
+from agentfuse.stream import is_stream_response, meter_async_stream, meter_sync_stream
 
 # The genuine litellm callables, captured at import time so install/uninstall is
 # idempotent and we always delegate to the real thing (never to our own wrapper).
@@ -78,13 +79,21 @@ def completion(*args: Any, real: Callable[..., Any] | None = None, **kwargs: Any
     model, messages, max_tokens = _extract_call_args(args, kwargs)
 
     # (1) estimate + (2) gate — raises BudgetExceeded BEFORE the delegate runs.
-    gate(model, messages, max_tokens=max_tokens, budget=current_budget())
+    # gate() returns the pre-call upper-bound estimate, kept as the streaming
+    # fallback so a streamed call with no usage block still advances the ledger.
+    estimate = gate(model, messages, max_tokens=max_tokens, budget=current_budget())
 
     # (3) delegate to the real litellm only when within budget.
     response = delegate(*args, **kwargs)
 
-    # (4) post-call commit of the real cost.
-    commit_actual(response, budget=current_budget())
+    # (4) post-call commit of the real cost. A streamed response (stream=True)
+    # carries no .usage until consumed, so meter it via the stream wrapper
+    # instead — otherwise commit_actual would commit $0 and the cumulative fuse
+    # would never trip on streamed runs.
+    budget = current_budget()
+    if budget is not None and is_stream_response(response):
+        return meter_sync_stream(response, budget, estimate)
+    commit_actual(response, budget=budget)
     return response
 
 
@@ -93,11 +102,14 @@ async def acompletion(*args: Any, real: Callable[..., Any] | None = None, **kwar
     delegate = real if real is not None else _REAL_ACOMPLETION
     model, messages, max_tokens = _extract_call_args(args, kwargs)
 
-    gate(model, messages, max_tokens=max_tokens, budget=current_budget())
+    estimate = gate(model, messages, max_tokens=max_tokens, budget=current_budget())
 
     response = await delegate(*args, **kwargs)
 
-    commit_actual(response, budget=current_budget())
+    budget = current_budget()
+    if budget is not None and is_stream_response(response):
+        return meter_async_stream(response, budget, estimate)
+    commit_actual(response, budget=budget)
     return response
 
 
