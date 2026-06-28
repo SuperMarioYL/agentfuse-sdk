@@ -195,7 +195,7 @@ gone.
 | Option | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `max_spend_usd` | `float` | required | Hard USD ceiling for this task (arg to `Fuse` / `@fuse`). |
-| `max_tokens` | `int` | `None` | Optional cumulative **token** ceiling — trips against the USD ceiling, whichever blows first. |
+| `max_total_tokens` | `int` | `None` | Optional **whole-task cumulative token** ceiling — trips against the USD ceiling, whichever blows first. Note this is the *whole-task* ceiling, not a single call's completion-length `max_tokens`. (The old `Fuse(max_tokens=...)` is kept as a **deprecated alias** for one release and emits a `DeprecationWarning`; `@fuse` / `task` have always used the clearer `ceiling_tokens`.) |
 | `single_call_ceiling` | `float` | `None` | Optional **per-call** USD hard cap, so one oversized prompt can't blow the whole budget in a single shot. |
 | `on_unpriced` | `str` | `"block"` | Policy when a model is missing from `litellm.model_cost`: `"block"` (fail closed → `UnpricedModelError`), `"fallback"` (conservative per-token estimate), or `"warn-pass"` (send ungated). |
 | `name` | `str` | `"task"` | Task label shown in the ledger and the trip banner. |
@@ -248,9 +248,15 @@ they click Upgrade → three-step Stripe Checkout → the control plane is live.
 - [x] **m3 · Wrap + demo**: zero-touch `Fuse` / `@fuse` wrapping of litellm +
       the `agentfuse` CLI + a runaway-agent demo that trips the fuse.
 - [x] **v0.2 · Hardening**: fail-closed on unpriced models (`on_unpriced`),
-      a token ceiling (`max_tokens`) and a per-call hard cap
+      a token ceiling (`max_total_tokens`) and a per-call hard cap
       (`single_call_ceiling`), plus an opt-in JSONL spend record feeding
       `agentfuse status --log`.
+- [x] **v0.3 · Stream metering + naming fix**: `stream=True` calls are now
+      metered on stream exhaustion (real usage when the provider emits it, else
+      the pre-call upper-bound estimate), so the cumulative fuse no longer
+      silently fails on streamed calls — the dominant agent call mode. Also
+      renamed `Fuse`'s cumulative-token keyword from the confusing `max_tokens`
+      to `max_total_tokens` (old name kept as a deprecated alias).
 - [ ] **AgentFuse Cloud**: team-level central budget policy, audit log, ceiling
       alerts (paid hosted control plane).
 - [ ] Cross-run budget rollover (the v0.2 record is read-only history; rollover

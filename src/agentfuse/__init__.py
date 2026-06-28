@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Public API surface. `exceptions` ships in stage A; `Budget`, `gate`, and `wrap`
 # are created in stages B/C. The cross-module imports are guarded so that

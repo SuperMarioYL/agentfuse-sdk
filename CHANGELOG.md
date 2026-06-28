@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-29
+
+Two correctness fixes that keep the fuse honest where it was quietly failing.
+Both stay *executive* guardrails (they halt / meter), never charts.
+
+### Fixed
+
+- **Streamed responses now advance the cumulative ledger** (`agentfuse.stream`,
+  wired through `wrap.completion` / `wrap.acompletion`). A `stream=True` call
+  returns a wrapper with no `.usage` until consumed, so post-call metering used
+  to commit `$0` and the cumulative USD / token ceilings could **never trip on a
+  streamed run** — the dominant agent call mode. The wrapper now meters the
+  stream on exhaustion: it commits the real cost when the provider emits a usage
+  block (litellm's `stream_options={"include_usage": True}`), and otherwise
+  commits the pre-call upper-bound estimate so the ledger still advances and the
+  fuse still trips on the next call. Chunks pass through transparently; sync and
+  async streams are both covered.
+
+### Changed
+
+- **`Fuse(max_total_tokens=...)` replaces the confusingly-named
+  `Fuse(max_tokens=...)`** for the cumulative whole-task token ceiling. In the
+  LLM ecosystem `max_tokens` means a *single call's* completion length, so
+  `Fuse(max_tokens=4096)` silently capped the *whole task* at 4096 tokens and
+  tripped after roughly one call. The cumulative ceiling keyword is now
+  `max_total_tokens` (matching `task()` / `@fuse()`'s `ceiling_tokens`).
+  `max_tokens` is kept as a **deprecated alias** for one release — it emits a
+  `DeprecationWarning` and still maps to the cumulative ceiling, so existing code
+  keeps working.
+
 ## [0.2.0] - 2026-06-19
 
 Hardening the fuse so it can't silently disable itself, plus two new ceilings
