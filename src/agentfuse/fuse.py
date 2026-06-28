@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextvars
 import functools
 import sys
+import warnings
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
@@ -193,11 +194,24 @@ class Fuse:
     a per-task :class:`Budget` ceiling. The bound budget is exposed as
     :attr:`budget` once the block is entered.
 
-    Optional guardrails: ``max_tokens`` adds a cumulative token ceiling (trips
-    against the USD ceiling, first-to-trip wins); ``single_call_ceiling`` adds a
-    per-call USD hard cap so one oversized prompt cannot blow the whole budget in
-    one shot; ``on_unpriced`` controls behaviour on models missing from the price
-    table (``'block'`` default, ``'fallback'``, or ``'warn-pass'``).
+    Optional guardrails: ``max_total_tokens`` adds a **cumulative whole-task**
+    token ceiling (trips against the USD ceiling, first-to-trip wins);
+    ``single_call_ceiling`` adds a per-call USD hard cap so one oversized prompt
+    cannot blow the whole budget in one shot; ``on_unpriced`` controls behaviour
+    on models missing from the price table (``'block'`` default, ``'fallback'``,
+    or ``'warn-pass'``).
+
+    .. note::
+        ``max_total_tokens`` is the **cumulative task ceiling**, deliberately NOT
+        named ``max_tokens``. In the LLM ecosystem ``max_tokens`` means the
+        *per-call completion length* (the value you pass to
+        ``litellm.completion(max_tokens=...)``), which AgentFuse reads off each
+        wrapped call for its pre-call estimate. Conflating the two — as the old
+        ``Fuse(max_tokens=...)`` keyword did — silently capped the *whole task*
+        at what users meant as a *single call's* completion length, tripping the
+        fuse after roughly one call. ``max_tokens`` is still accepted as a
+        deprecated alias for one release (it emits a :class:`DeprecationWarning`
+        and still maps to the cumulative ceiling) so existing code keeps working.
     """
 
     def __init__(
@@ -205,23 +219,45 @@ class Fuse:
         max_spend_usd: float,
         name: str = "task",
         *,
+        max_total_tokens: int | None = None,
         max_tokens: int | None = None,
         single_call_ceiling: float | None = None,
         on_unpriced: str = "block",
     ) -> None:
+        if max_tokens is not None:
+            warnings.warn(
+                "Fuse(max_tokens=...) is deprecated and will be removed in a future "
+                "release: the name collides with the per-call completion-length "
+                "`max_tokens`, but on Fuse it sets the CUMULATIVE whole-task token "
+                "ceiling. Use Fuse(max_total_tokens=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if max_total_tokens is None:
+                max_total_tokens = max_tokens
+            elif max_total_tokens != max_tokens:
+                raise ValueError(
+                    "pass either max_total_tokens or the deprecated max_tokens, not "
+                    "both with different values"
+                )
         self.max_spend_usd = max_spend_usd
         self.name = name
-        self.max_tokens = max_tokens
+        self.max_total_tokens = max_total_tokens
         self.single_call_ceiling = single_call_ceiling
         self.on_unpriced = on_unpriced
         self.budget: Budget | None = None
         self._cm: Iterator[Budget] | None = None
 
+    @property
+    def max_tokens(self) -> int | None:
+        """Deprecated alias for :attr:`max_total_tokens` (the cumulative ceiling)."""
+        return self.max_total_tokens
+
     def __enter__(self) -> Budget:
         self._cm = task(
             self.max_spend_usd,
             name=self.name,
-            ceiling_tokens=self.max_tokens,
+            ceiling_tokens=self.max_total_tokens,
             single_call_ceiling=self.single_call_ceiling,
             on_unpriced=self.on_unpriced,
         )

@@ -220,8 +220,10 @@ def test_per_call_cap_via_fuse_context_manager():
             budget.check(estimated_usd=0.30)
 
 
-def test_token_ceiling_via_fuse_max_tokens_kwarg():
-    with Fuse(max_spend_usd=1_000.0, max_tokens=10) as budget:
+def test_token_ceiling_via_fuse_max_total_tokens_kwarg():
+    # v0.3.0 — the cumulative token ceiling keyword is `max_total_tokens` (the old
+    # `max_tokens` is a deprecated alias, covered in test_stream.py).
+    with Fuse(max_spend_usd=1_000.0, max_total_tokens=10) as budget:
         assert budget.ceiling_tokens == 10
         with pytest.raises(BudgetExceeded) as excinfo:
             budget.check(estimated_usd=0.0001, estimated_tokens=50)
