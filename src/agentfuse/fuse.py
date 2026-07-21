@@ -31,7 +31,7 @@ import warnings
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
-from agentfuse.budget import Budget
+from agentfuse.budget import Budget, TripCallback
 from agentfuse.exceptions import BudgetExceeded
 from agentfuse.pricing import actual_cost, actual_tokens, estimate_call
 
@@ -150,6 +150,7 @@ def task(
     ceiling_tokens: int | None = None,
     single_call_ceiling: float | None = None,
     on_unpriced: str = "block",
+    on_trip: TripCallback | None = None,
 ) -> Iterator[Budget]:
     """Scope a per-task spend ceiling for every gated call made inside the block.
 
@@ -171,6 +172,11 @@ def task(
         on_unpriced: Policy for models missing from ``litellm.model_cost`` —
             ``'block'`` (default, fail closed), ``'fallback'`` (conservative
             estimate), or ``'warn-pass'`` (v0.1 pass-through).
+        on_trip: Optional callback invoked with the :class:`BudgetExceeded` the
+            fuse is *about* to raise, before the over-budget call is sent (v0.4.0).
+            Fail-soft — see :class:`~agentfuse.budget.Budget`. Use it to push the
+            trip event into your own webhook / audit DB / metric counter
+            in-process, ahead of the AgentFuse Cloud ``report_to=`` hook.
     """
     budget = Budget(
         ceiling_usd=ceiling_usd,
@@ -178,6 +184,7 @@ def task(
         ceiling_tokens=ceiling_tokens,
         single_call_ceiling=single_call_ceiling,
         on_unpriced=on_unpriced,
+        on_trip=on_trip,
     )
     token = _ACTIVE_BUDGET.set(budget)
     try:
@@ -199,7 +206,11 @@ class Fuse:
     ``single_call_ceiling`` adds a per-call USD hard cap so one oversized prompt
     cannot blow the whole budget in one shot; ``on_unpriced`` controls behaviour
     on models missing from the price table (``'block'`` default, ``'fallback'``,
-    or ``'warn-pass'``).
+    or ``'warn-pass'``); ``on_trip`` (v0.4.0) is a fail-soft callback invoked with
+    the :class:`BudgetExceeded` right before the over-budget call is blocked, so
+    an operator can wire the trip event into their own webhook / audit DB /
+    metric counter in-process (the eventual ``report_to="cloud"`` upload hook is
+    a thin ``on_trip`` wired to the hosted endpoint).
 
     .. note::
         ``max_total_tokens`` is the **cumulative task ceiling**, deliberately NOT
@@ -223,6 +234,7 @@ class Fuse:
         max_tokens: int | None = None,
         single_call_ceiling: float | None = None,
         on_unpriced: str = "block",
+        on_trip: TripCallback | None = None,
     ) -> None:
         if max_tokens is not None:
             warnings.warn(
@@ -245,6 +257,7 @@ class Fuse:
         self.max_total_tokens = max_total_tokens
         self.single_call_ceiling = single_call_ceiling
         self.on_unpriced = on_unpriced
+        self.on_trip = on_trip
         self.budget: Budget | None = None
         self._cm: Iterator[Budget] | None = None
 
@@ -260,6 +273,7 @@ class Fuse:
             ceiling_tokens=self.max_total_tokens,
             single_call_ceiling=self.single_call_ceiling,
             on_unpriced=self.on_unpriced,
+            on_trip=self.on_trip,
         )
         self.budget = self._cm.__enter__()  # type: ignore[attr-defined]
         return self.budget
@@ -277,6 +291,7 @@ def fuse(
     ceiling_tokens: int | None = None,
     single_call_ceiling: float | None = None,
     on_unpriced: str = "block",
+    on_trip: TripCallback | None = None,
 ) -> Callable[[F], F]:
     """Decorator binding a per-call spend ceiling to a function.
 
@@ -289,8 +304,10 @@ def fuse(
             ...
 
     Optional ``ceiling_tokens`` / ``single_call_ceiling`` / ``on_unpriced`` carry
-    the same meaning as on :func:`task` / :class:`Fuse`. The decorated function's
-    name is used as the budget label unless ``name`` is given.
+    the same meaning as on :func:`task` / :class:`Fuse`. ``on_trip`` (v0.4.0) is
+    a fail-soft callback invoked with the :class:`BudgetExceeded` right before the
+    over-budget call is blocked. The decorated function's name is used as the
+    budget label unless ``name`` is given.
     """
     resolved = ceiling_usd if ceiling_usd is not None else max_spend_usd
     if resolved is None:
@@ -306,6 +323,7 @@ def fuse(
                 ceiling_tokens=ceiling_tokens,
                 single_call_ceiling=single_call_ceiling,
                 on_unpriced=on_unpriced,
+                on_trip=on_trip,
             ):
                 return func(*args, **kwargs)
 

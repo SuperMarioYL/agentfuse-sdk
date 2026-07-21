@@ -28,11 +28,24 @@ Three ceilings can trip the fuse, **first-to-trip wins**:
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from dataclasses import dataclass
+from typing import Callable
 
 from agentfuse.exceptions import BudgetExceeded
+
+logger = logging.getLogger("agentfuse.budget")
+
+# A user-supplied trip hook. It receives the fully-structured BudgetExceeded that
+# the fuse is *about* to raise (so it can read spent / ceiling / would_spend /
+# limit_kind / token-ledger fields) and is invoked BEFORE the over-budget call
+# is delegated to litellm — the same moment the stderr trip banner fires. Any
+# exception raised by the callback is logged and swallowed: a user hook must
+# NEVER change whether the over-budget call is blocked. ``None`` (default)
+# means no hook — the fuse simply raises, exactly as it did before v0.4.0.
+TripCallback = Callable[["BudgetExceeded"], None]
 
 
 def _require_finite_positive(value: float, label: str) -> float:
@@ -75,6 +88,15 @@ class Budget:
             estimate alone exceeds this trips the fuse independently of the
             cumulative ledger. ``None`` disables it. When set it must be a finite
             number greater than 0.
+        on_trip: Optional callback invoked with the :class:`BudgetExceeded` the
+            fuse is *about* to raise, right before the over-budget call is
+            blocked. It sees the same structured trip context (``spent`` /
+            ``ceiling`` / ``would_spend`` / ``limit_kind`` / token-ledger fields)
+            the trip banner uses, so an operator can wire the trip event into
+            their own Slack/Feishu webhook, audit DB, or metric counter in-process.
+            The hook is fail-soft: any exception it raises is logged and
+            swallowed, so a user callback can never change whether the
+            over-budget call is blocked. ``None`` (default) means no hook.
 
     The ledger starts at ``0`` confirmed spend. :meth:`commit` accumulates real
     spend after each call; :meth:`would_exceed` is the pre-call admission check.
@@ -90,12 +112,15 @@ class Budget:
         ceiling_tokens: int | None = None,
         single_call_ceiling: float | None = None,
         on_unpriced: str = "block",
+        on_trip: TripCallback | None = None,
     ) -> None:
         self.ceiling_usd: float = _require_finite_positive(ceiling_usd, "ceiling_usd")
         self.name: str = name
         # Policy carried alongside the ledger so the gate (which only has the
         # active Budget in hand) can honour it when a model is unpriced.
         self.on_unpriced: str = on_unpriced
+        # In-process trip hook (v0.4.0). Fail-soft: see _invoke_on_trip.
+        self.on_trip: TripCallback | None = on_trip
 
         if ceiling_tokens is not None:
             ct = int(ceiling_tokens)
@@ -155,6 +180,53 @@ class Budget:
             return "tokens"
         return None
 
+    def _build_exceeded(
+        self, reason: str, estimated_usd: float, estimated_tokens: int
+    ) -> BudgetExceeded:
+        """Construct the :class:`BudgetExceeded` for a tripped ceiling. Caller holds the lock."""
+        if reason == "single_call":
+            return BudgetExceeded(
+                spent=self._spent_usd,
+                ceiling=self.single_call_ceiling,  # type: ignore[arg-type]
+                would_spend=estimated_usd,
+                limit_kind="single_call",
+            )
+        if reason == "tokens":
+            return BudgetExceeded(
+                spent=self._spent_usd,
+                ceiling=self.ceiling_usd,
+                would_spend=estimated_usd,
+                limit_kind="tokens",
+                spent_tokens=self._spent_tokens,
+                ceiling_tokens=self.ceiling_tokens,
+                would_spend_tokens=estimated_tokens,
+            )
+        return BudgetExceeded(
+            spent=self._spent_usd,
+            ceiling=self.ceiling_usd,
+            would_spend=estimated_usd,
+            limit_kind="usd",
+        )
+
+    def _invoke_on_trip(self, err: BudgetExceeded) -> None:
+        """Run the user-supplied ``on_trip`` hook fail-soft, OUTSIDE the ledger lock.
+
+        The hook sees the fully-structured trip exception (the same fields the
+        stderr banner composes its body from). Any exception it raises is logged
+        at debug and swallowed — a user callback must never change whether the
+        over-budget call is blocked, so the fuse still raises ``err`` afterwards.
+        """
+        if self.on_trip is None:
+            return
+        try:
+            self.on_trip(err)
+        except Exception:  # noqa: BLE001 - never let a user hook break the gate
+            logger.debug(
+                "on_trip callback raised for task %r; swallowing (fuse still trips)",
+                self.name,
+                exc_info=True,
+            )
+
     def check(self, estimated_usd: float, estimated_tokens: int = 0) -> None:
         """Raise :class:`BudgetExceeded` if this estimate would trip any ceiling.
 
@@ -162,34 +234,21 @@ class Budget:
         ``litellm`` so the over-budget call is never sent. Whichever ceiling
         trips first (per-call USD cap, cumulative USD, or cumulative tokens)
         determines the structured fields on the raised exception.
+
+        If an ``on_trip`` callback is set on this budget (v0.4.0), it is invoked
+        with the about-to-be-raised :class:`BudgetExceeded` — fail-soft, outside
+        the ledger lock — *before* the exception is raised, so an operator can
+        wire the trip event into their own alerting/audit/metrics in-process.
         """
         with self._lock:
             reason = self._tripped_reason(estimated_usd, estimated_tokens)
             if reason is None:
                 return
-            if reason == "single_call":
-                raise BudgetExceeded(
-                    spent=self._spent_usd,
-                    ceiling=self.single_call_ceiling,  # type: ignore[arg-type]
-                    would_spend=estimated_usd,
-                    limit_kind="single_call",
-                )
-            if reason == "tokens":
-                raise BudgetExceeded(
-                    spent=self._spent_usd,
-                    ceiling=self.ceiling_usd,
-                    would_spend=estimated_usd,
-                    limit_kind="tokens",
-                    spent_tokens=self._spent_tokens,
-                    ceiling_tokens=self.ceiling_tokens,
-                    would_spend_tokens=estimated_tokens,
-                )
-            raise BudgetExceeded(
-                spent=self._spent_usd,
-                ceiling=self.ceiling_usd,
-                would_spend=estimated_usd,
-                limit_kind="usd",
-            )
+            err = self._build_exceeded(reason, estimated_usd, estimated_tokens)
+        # Lock released before the user hook runs, so a callback that touches
+        # this budget (e.g. reads .snapshot()) cannot deadlock against the gate.
+        self._invoke_on_trip(err)
+        raise err
 
     def commit(self, actual_usd: float, actual_tokens: int = 0) -> float:
         """Add confirmed spend to the ledger; return the new USD total.

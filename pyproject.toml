@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentfuse"
-version = "0.3.0"
+version = "0.4.0"
 description = "An enforcing per-task spend circuit-breaker for autonomous agents — halts an Agent before it burns your budget. 给自主 Agent 装的花费保险丝。"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,8 +34,8 @@ dev = ["pytest"]
 agentfuse = "agentfuse.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/supermario_leo/agentfuse"
-Repository = "https://github.com/supermario_leo/agentfuse"
+Homepage = "https://github.com/SuperMarioYL/agentfuse-sdk"
+Repository = "https://github.com/SuperMarioYL/agentfuse-sdk"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentfuse"]

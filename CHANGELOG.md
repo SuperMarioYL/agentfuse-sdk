@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-21
+
+Two doc/metadata correctness fixes plus one small in-process trip hook. Every
+change is still an *executive* guardrail (it halts) or a doc fix — no dashboard,
+no monitoring service.
+
+### Fixed
+
+- **Package metadata + README repo links now point at the real repo.**
+  `pyproject.toml`'s PyPI `Homepage`/`Repository` URLs and both READMEs' CI-badge
+  link, "Share this" paste text, and copyright-footer profile link all pointed
+  at `https://github.com/supermario_leo/agentfuse` — a repo that does not exist
+  (`supermario_leo` is the local git author identity, not the GitHub login that
+  owns the repo). Every PyPI Homepage/Repository link 404'd. Corrected to the
+  real `https://github.com/SuperMarioYL/agentfuse-sdk`.
+- **CHANGELOG link references repaired.** The `[0.3.0]` header shipped without a
+  matching `[0.3.0]: ...` link reference (so it rendered as dead plain text on
+  GitHub), the `[Unreleased]` compare was still based at `v0.2.0...HEAD` instead
+  of `v0.3.0...HEAD`, and all compare/release links used the wrong repo. Fixed:
+  added the missing `[0.3.0]` reference, re-based `[Unreleased]` on `v0.3.0`, and
+  rewrote every link to the real `SuperMarioYL/agentfuse-sdk` repo.
+
+### Added
+
+- **In-process `on_trip` callback hook.** `Budget(on_trip=...)` (threaded through
+  `task(...)` / `Fuse(...)` / `@fuse(...)` alongside the existing `on_unpriced`
+  kwarg) is invoked fail-soft with the fully-structured `BudgetExceeded` right
+  before the over-budget call is blocked — *before* it is delegated to litellm,
+  so the over-budget call is still never sent. Any exception the callback raises
+  is logged and swallowed, so a user hook can never change whether the call is
+  blocked. This advances the plan §1 `--report-endpoint` / `report_to=` /
+  AgentFuse Cloud GTM in-process: an operator can wire
+  `Fuse(max_spend_usd=5.0, on_trip=lambda e: requests.post(..., json=e.__dict__))`
+  today, and the eventual `report_to="cloud"` upload hook is a thin `on_trip`
+  wired to the hosted endpoint. It is still an executive guardrail, not a
+  dashboard.
+
 ## [0.3.0] - 2026-06-29
 
 Two correctness fixes that keep the fuse honest where it was quietly failing.
@@ -118,6 +155,8 @@ the money is never spent.
   `spent` / `ceiling` / `would_spend` fields.
 - 30 tests (`test_budget` ×16, `test_fuse` ×14); CI on Python 3.11 / 3.12.
 
-[Unreleased]: https://github.com/supermario_leo/agentfuse/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/supermario_leo/agentfuse/releases/tag/v0.2.0
-[0.1.0]: https://github.com/supermario_leo/agentfuse/releases/tag/v0.1.0
+[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.4.0
+[0.3.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.3.0
+[0.2.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.2.0
+[0.1.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.1.0

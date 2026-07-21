@@ -7,7 +7,7 @@
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg?logo=python&logoColor=white" alt="Python 3.11+" />
-  <a href="https://github.com/supermario_leo/agentfuse/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI" /></a>
+  <a href="https://github.com/SuperMarioYL/agentfuse-sdk/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/PyPI-agentfuse-orange.svg?logo=pypi&logoColor=white" alt="PyPI" />
   <img src="https://img.shields.io/badge/Agent-circuit--breaker-b91c1c.svg" alt="Agent circuit-breaker" />
 </p>
@@ -198,6 +198,7 @@ gone.
 | `max_total_tokens` | `int` | `None` | Optional **whole-task cumulative token** ceiling — trips against the USD ceiling, whichever blows first. Note this is the *whole-task* ceiling, not a single call's completion-length `max_tokens`. (The old `Fuse(max_tokens=...)` is kept as a **deprecated alias** for one release and emits a `DeprecationWarning`; `@fuse` / `task` have always used the clearer `ceiling_tokens`.) |
 | `single_call_ceiling` | `float` | `None` | Optional **per-call** USD hard cap, so one oversized prompt can't blow the whole budget in a single shot. |
 | `on_unpriced` | `str` | `"block"` | Policy when a model is missing from `litellm.model_cost`: `"block"` (fail closed → `UnpricedModelError`), `"fallback"` (conservative per-token estimate), or `"warn-pass"` (send ungated). |
+| `on_trip` | `Callable[[BudgetExceeded], None] \| None` | `None` | Optional trip callback (v0.4): invoked fail-soft with the structured `BudgetExceeded` right before the over-budget call is blocked (any exception the callback raises is swallowed and never changes whether the call is blocked). Use it to push the trip event into your own webhook / audit / metric — a minimal in-process precursor to the §1 `report_to="cloud"` cloud hook. |
 | `name` | `str` | `"task"` | Task label shown in the ledger and the trip banner. |
 | `--ceiling` (CLI demo) | `float` | `0.50` | Per-task ceiling for `agentfuse demo`. |
 
@@ -257,6 +258,15 @@ they click Upgrade → three-step Stripe Checkout → the control plane is live.
       silently fails on streamed calls — the dominant agent call mode. Also
       renamed `Fuse`'s cumulative-token keyword from the confusing `max_tokens`
       to `max_total_tokens` (old name kept as a deprecated alias).
+- [x] **v0.4 · Metadata/doc fix + on_trip hook**: corrected the pyproject +
+      both READMEs' repo links that pointed at the non-existent
+      `supermario_leo/agentfuse` (now the real `SuperMarioYL/agentfuse-sdk`),
+      added the missing `[0.3.0]` CHANGELOG link reference and re-based the
+      `[Unreleased]` compare at `v0.3.0`; added an optional `on_trip` callback
+      (`Budget` / `Fuse` / `task` / `@fuse` all accept it) invoked fail-soft with
+      the `BudgetExceeded` right before the over-budget call is blocked, so an
+      operator can wire the trip event into their own webhook / audit / metric
+      in-process — a minimal in-process precursor to the §1 `report_to=` cloud hook.
 - [ ] **AgentFuse Cloud**: team-level central budget policy, audit log, ceiling
       alerts (paid hosted control plane).
 - [ ] Cross-run budget rollover (the v0.2 record is read-only history; rollover
@@ -282,9 +292,9 @@ gh repo edit --add-topic agent --add-topic llm --add-topic litellm --add-topic c
 Your AI Agent is running unattended — who's the fuse?
 AgentFuse puts a hard per-task ceiling on it and 🔌 trips before the next LLM
 call can bankrupt you — the money is never spent. Two lines, zero-touch on
-LiteLLM. https://github.com/supermario_leo/agentfuse
+LiteLLM. https://github.com/SuperMarioYL/agentfuse-sdk
 ```
 
 ---
 
-<sub>Apache-2.0 © 2026 <a href="https://github.com/supermario_leo">supermario_leo</a></sub>
+<sub>Apache-2.0 © 2026 <a href="https://github.com/SuperMarioYL">SuperMarioYL</a></sub>

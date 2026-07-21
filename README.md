@@ -7,7 +7,7 @@
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg?logo=python&logoColor=white" alt="Python 3.11+" />
-  <a href="https://github.com/supermario_leo/agentfuse/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI" /></a>
+  <a href="https://github.com/SuperMarioYL/agentfuse-sdk/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/PyPI-agentfuse-orange.svg?logo=pypi&logoColor=white" alt="PyPI" />
   <img src="https://img.shields.io/badge/Agent-circuit--breaker-b91c1c.svg" alt="Agent circuit-breaker" />
 </p>
@@ -166,6 +166,7 @@ LiteLLM 仍负责统一各 provider 的实际调用、定价表与 usage 字段�
 | `max_total_tokens` | `int` | `None` | 可选的**整任务累计 token** 上限——与 USD 上限并行，先触顶者为准。注意它是「整任务」上限，不是单次调用的补全长度 `max_tokens`。（旧的 `Fuse(max_tokens=...)` 仍作为**已弃用别名**保留一个版本，会发 `DeprecationWarning`。`@fuse` / `task` 一直用更清晰的 `ceiling_tokens`。） |
 | `single_call_ceiling` | `float` | `None` | 可选的**单次调用** USD 硬上限，避免一个超大 prompt 一发就把整笔预算打穿。 |
 | `on_unpriced` | `str` | `"block"` | 模型不在 `litellm.model_cost` 时的策略：`"block"`（失败即熔断 → `UnpricedModelError`）、`"fallback"`（按保守单价估）、`"warn-pass"`（不拦放行）。 |
+| `on_trip` | `Callable[[BudgetExceeded], None] \| None` | `None` | 可选的跳闸回调（v0.4）：在熔断抛出前、超预算调用被拦下时，以结构化的 `BudgetExceeded` 为参数 fail-soft 触发（回调抛的异常会被吞掉、不影响是否拦下调用）。用来把跳闸事件接进自己的 webhook/审计/metric——为 §1 的 `report_to="cloud"` 云端钩子做最小在进程内的铺垫。 |
 | `name` | `str` | `"task"` | 任务标签，显示在台账与跳闸横幅里。 |
 | `--ceiling`（CLI demo） | `float` | `0.50` | `agentfuse demo` 用的每任务上限。 |
 
@@ -196,6 +197,7 @@ LiteLLM 仍负责统一各 provider 的实际调用、定价表与 usage 字段�
 - [x] **m3 · 包装 + demo**：零侵入 `Fuse` / `@fuse` 包装 litellm + `agentfuse` CLI + 会被掐断的 runaway-agent demo。
 - [x] **v0.2 · 加固**：未定价模型失败即熔断（`on_unpriced`）、token 上限（`max_total_tokens`）与单次调用硬上限（`single_call_ceiling`），外加一个可选的 JSONL 花费记录，喂给 `agentfuse status --log`。
 - [x] **v0.3 · 流式计量 + 命名修正**：`stream=True` 的调用现在会在流耗尽时正确计量（有 usage 用真实花费，无 usage 用调用前估算上界），累计熔断不再对流式调用失效——这是 agent 最常用的调用模式。同时把 `Fuse` 的累计 token 上限关键字从易混淆的 `max_tokens` 改名为 `max_total_tokens`（旧名保留为弃用别名）。
+- [x] **v0.4 · 元数据/文档订正 + on_trip 钩子**：修正 pyproject 与双 README 里指向不存在的 `supermario_leo/agentfuse` 的仓库链接（改为真实 `SuperMarioYL/agentfuse-sdk`），补齐 CHANGELOG 缺失的 `[0.3.0]` 链接引用并修正 `[Unreleased]` 的 compare 基线；新增可选的 `on_trip` 回调（`Budget`/`Fuse`/`task`/`@fuse` 都接受），在熔断抛出前以 `BudgetExceeded` 为参数 fail-soft 触发，方便把跳闸事件接进自己的 webhook/审计/metric——为 §1 的 `report_to=` 云端钩子做最小在进程内的铺垫。
 - [ ] **AgentFuse Cloud**：团队级集中预算策略、审计日志、触顶告警（付费托管控制面）。
 - [ ] 跨 run 预算滚存（v0.2 的记录是只读历史；滚存仍延后）。
 - [ ] 非 LLM 云资源（算力/存储/带宽）计量。
@@ -216,9 +218,9 @@ gh repo edit --add-topic agent --add-topic llm --add-topic litellm --add-topic c
 ```text
 你的 AI Agent 正在无人值守地放手跑——谁来当那根保险丝?
 AgentFuse 给单次任务设硬上限，在下一次 LLM 调用把你跑穷之前就 🔌 跳闸——
-钱根本没花出去。两行接入，挂在 LiteLLM 上零侵入。 https://github.com/supermario_leo/agentfuse
+钱根本没花出去。两行接入，挂在 LiteLLM 上零侵入。 https://github.com/SuperMarioYL/agentfuse-sdk
 ```
 
 ---
 
-<sub>Apache-2.0 © 2026 <a href="https://github.com/supermario_leo">supermario_leo</a></sub>
+<sub>Apache-2.0 © 2026 <a href="https://github.com/SuperMarioYL">SuperMarioYL</a></sub>
