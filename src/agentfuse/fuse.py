@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import inspect
 import sys
 import warnings
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
-from agentfuse.budget import Budget, TripCallback
+from agentfuse.budget import Budget, Reservation, TripCallback
 from agentfuse.exceptions import BudgetExceeded
 from agentfuse.pricing import actual_cost, actual_tokens, estimate_call
 
@@ -125,20 +126,79 @@ def gate(
     return estimate
 
 
-def commit_actual(response: Any, *, budget: Budget | None = None) -> float:
+def gate_with_reservation(
+    model: str,
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    max_tokens: int | None = None,
+    budget: Budget | None = None,
+) -> tuple[float, Reservation | None]:
+    """Pre-call admission + reservation (the v0.5.0 race-free gate).
+
+    Like :func:`gate` but **reserves** the estimate against the budget's pending
+    balance (:meth:`Budget.reserve`) and returns the :class:`Reservation` handle
+    alongside the estimate, so the caller can thread it to :func:`commit_actual`
+    (on success — releases the reservation and commits the real cost) or
+    :meth:`Budget.release` (on the error path — releases without committing).
+    This makes the gate atomic across the awaited LLM call: a concurrent caller
+    that gates while this call is still in-flight sees the reserved amount in
+    the budget's pending balance and cannot also pass, so concurrent fan-out
+    (``asyncio.gather`` of ``acompletion`` calls) cannot overshoot the ceiling
+    (the v0.5.0 fix-budget-check-commit-race fix).
+
+    Returns ``(0.0, None)`` when there is no active budget (the fuse is a no-op
+    outside a task scope — pass-through). Raises :class:`BudgetExceeded` (after
+    the trip banner) when the estimate would cross the ceiling, reserving
+    nothing.
+
+    :func:`gate` (the float-returning peek) is kept for backward compatibility
+    and for callers that only want a side-effect-free peek at the gate state;
+    the litellm wrapper (:mod:`agentfuse.wrap`) uses this reserving variant so
+    its check→await→commit path is race-free.
+    """
+    active = budget if budget is not None else current_budget()
+    if active is None:
+        # No fuse installed for this context: do not gate, do not reserve.
+        return 0.0, None
+
+    estimate, est_tokens = estimate_call(
+        model,
+        messages,
+        max_tokens=max_tokens,
+        on_unpriced=getattr(active, "on_unpriced", "block"),
+    )
+    try:
+        # raises BudgetExceeded (reserving nothing) if it would cross a ceiling
+        reservation = active.reserve(estimate, est_tokens)
+    except BudgetExceeded as err:
+        _print_trip_banner(err)
+        raise
+    return estimate, reservation
+
+
+def commit_actual(
+    response: Any,
+    *,
+    budget: Budget | None = None,
+    reservation: Reservation | None = None,
+) -> float:
     """Post-call metering: add the real cost of ``response`` to the ledger.
 
     Reads the confirmed USD cost from the response's ``Usage``
     (:func:`~agentfuse.pricing.actual_cost`) and commits it to ``budget``
-    (defaulting to the active per-task budget). Returns the committed amount, or
-    ``0.0`` when there is no active budget.
+    (defaulting to the active per-task budget). When a ``reservation`` handle
+    from :func:`gate_with_reservation` is supplied, it is released atomically
+    with the real-cost commit (the v0.5.0 race-free path: the pending estimate
+    is settled alongside the confirmed spend so concurrent callers stop seeing
+    it as in-flight). Returns the committed amount, or ``0.0`` when there is no
+    active budget.
     """
     active = budget if budget is not None else current_budget()
     if active is None:
         return 0.0
     cost = actual_cost(response)
     tokens = actual_tokens(response)
-    active.commit(cost, tokens)
+    active.commit(cost, tokens, reservation=reservation)
     return cost
 
 
@@ -315,11 +375,36 @@ def fuse(
     limit = float(resolved)
 
     def decorator(func: F) -> F:
+        task_name = name or getattr(func, "__name__", "task")
+        if inspect.iscoroutinefunction(func):
+            # Async path (v0.5.0 fix-async-decorator-bypasses-fuse): await the
+            # coroutine INSIDE the with-task block so the per-task Budget stays
+            # bound while the async body actually runs. The old sync wrapper
+            # returned the coroutine object without starting the body, then the
+            # with-task block exited (resetting the contextvar) BEFORE the caller
+            # ever `await`ed it — so current_budget() was None inside the async
+            # body and acompletion took the no-budget pass-through path, silently
+            # disabling the fuse for every decorated async function.
+            @functools.wraps(func)
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                with task(
+                    limit,
+                    name=task_name,
+                    ceiling_tokens=ceiling_tokens,
+                    single_call_ceiling=single_call_ceiling,
+                    on_unpriced=on_unpriced,
+                    on_trip=on_trip,
+                ):
+                    return await func(*args, **kwargs)
+
+            return wrapper  # type: ignore[return-value]
+
+        # Sync path — unchanged.
         @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: F811
             with task(
                 limit,
-                name=name or getattr(func, "__name__", "task"),
+                name=task_name,
                 ceiling_tokens=ceiling_tokens,
                 single_call_ceiling=single_call_ceiling,
                 on_unpriced=on_unpriced,
@@ -342,6 +427,7 @@ __all__ = [
     "fuse",
     "fused",
     "gate",
+    "gate_with_reservation",
     "commit_actual",
     "current_budget",
     "TRIP_BANNER",

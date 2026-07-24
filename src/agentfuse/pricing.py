@@ -36,9 +36,16 @@ from agentfuse.exceptions import UnpricedModelError
 logger = logging.getLogger("agentfuse.pricing")
 
 # When a caller does not cap completion length we still need a finite upper bound
-# for the pre-call estimate. This is deliberately generous so the gate stays
-# conservative (better to trip a little early than to overshoot the ceiling).
-DEFAULT_MAX_COMPLETION_TOKENS = 1024
+# for the pre-call estimate. Real streamed completions routinely run 4k-16k
+# tokens on modern frontier models, so the v0.1-v0.4 default of 1024 was NOT an
+# upper bound: the pre-call gate passed on the small estimate and the post-call
+# commit of the real (larger) usage jumped the ledger past the ceiling with no
+# retroactive trip — the fuse only gates the NEXT call, which for a one-shot
+# streamed task never comes. The floor is now 8192, and when
+# ``litellm.model_cost`` carries a model-specific ``max_output_tokens`` that is
+# larger, that genuine cap is preferred (see :func:`_model_max_output_tokens`),
+# so the estimate is an actual upper bound for typical streamed completions.
+DEFAULT_MAX_COMPLETION_TOKENS = 8192
 
 # Policy for a model that is not in litellm.model_cost.
 OnUnpriced = Literal["block", "fallback", "warn-pass"]
@@ -64,6 +71,27 @@ def _model_prices(model: str) -> tuple[float, float] | None:
     if in_cost is None and out_cost is None:
         return None
     return float(in_cost or 0.0), float(out_cost or 0.0)
+
+
+def _model_max_output_tokens(model: str) -> int | None:
+    """Return the model's own ``max_output_tokens`` from ``litellm.model_cost``.
+
+    Used as a model-aware upper bound on completion length when the caller omits
+    ``max_tokens`` (the common case for streamed agent calls). Returns ``None``
+    when the model is unpriced or the field is absent / non-positive, so the
+    caller falls back to :data:`DEFAULT_MAX_COMPLETION_TOKENS` as the floor.
+    """
+    entry: Mapping[str, Any] | None = litellm.model_cost.get(model)
+    if not entry:
+        return None
+    cap = entry.get("max_output_tokens")
+    if cap is None:
+        return None
+    try:
+        n = int(cap)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def count_prompt_tokens(model: str, messages: Sequence[Mapping[str, Any]]) -> int:
@@ -118,9 +146,18 @@ def estimate_call(
       pass-through; the USD gate cannot block this call).
     """
     prompt_tokens = count_prompt_tokens(model, messages)
-    completion_tokens = (
-        max_tokens if max_tokens is not None and max_tokens > 0 else DEFAULT_MAX_COMPLETION_TOKENS
-    )
+    if max_tokens is not None and max_tokens > 0:
+        # Caller explicitly capped completion length — honour it.
+        completion_tokens = int(max_tokens)
+    else:
+        # No caller cap: use a genuinely conservative upper bound. Prefer the
+        # model's own max_output_tokens when litellm knows it and it is larger;
+        # DEFAULT_MAX_COMPLETION_TOKENS (8192) is the floor fallback so the
+        # estimate is an actual upper bound for typical streamed completions
+        # (real ones run 4k-16k on frontier models — the old 1024 default was
+        # not an upper bound and let streamed calls overshoot post-commit).
+        model_cap = _model_max_output_tokens(model)
+        completion_tokens = max(DEFAULT_MAX_COMPLETION_TOKENS, model_cap or 0)
     token_bound = prompt_tokens + completion_tokens
 
     prices = _model_prices(model)

@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-25
+
+Three correctness fixes that close the last ways the fuse could silently fail to
+break. All three stay *executive* guardrails (they halt / reserve / gate) — no
+dashboard, no monitoring service, no new surface. Each was empirically verified
+end-to-end and is pinned by adversarial red→green tests (`tests/test_v050_fixes.py`).
+
+### Fixed
+
+- **`@fuse` / `@fused` no longer silently bypass the fuse for `async def`
+  functions.** The decorator's `wrapper` was a sync `def`: for a coroutine `func`,
+  `func(*args)` returned the coroutine object without starting the body, then the
+  `with task(...)` block exited (resetting the `contextvars` budget binding) BEFORE
+  the caller ever `await`ed the returned coroutine. When the async body finally
+  ran, `current_budget()` was `None`, so `acompletion` took the no-budget
+  pass-through path — `gate()` returned `0.0` and `commit_actual` was a no-op.
+  The fuse was completely inert for every decorated async function, with no error
+  and no warning (a circuit-breaker that silently did not break) — exactly the
+  async-agent audience the GTM targets (hermes-agent / OpenViking runtimes). The
+  decorator now branches on `inspect.iscoroutinefunction(func)`: for async, an
+  `async def wrapper` does `return await func(...)` INSIDE the `with task(...)`
+  block so the budget stays bound while the coroutine runs; the sync path is
+  unchanged. `functools.wraps` preserves metadata in both branches.
+- **The pre-call budget gate is now atomic across the awaited LLM call so
+  concurrent fan-out cannot overshoot the ceiling.** `Budget.check` released the
+  lock before `acompletion` awaited the delegate, so two concurrent calls both
+  gated against the still-uncommitted ledger (`spent` unchanged because neither
+  had committed yet), both passed, and both committed — overshooting the ceiling
+  by up to `(concurrency * per-call estimate)`. Any async agent that fans out
+  (`asyncio.gather` of tool calls / parallel completions) could silently overspend.
+  `Budget` now keeps a `pending_usd` / `pending_tokens` reserve held under the
+  existing lock: a new `Budget.reserve(estimate)` is the mutating gate that adds
+  the estimate to `pending` (so the gate considers `spent + pending + estimate`
+  against the ceiling) and returns a `Reservation` handle; `Budget.commit(...,
+  reservation=)` releases the reservation and adds the real cost (success path);
+  `Budget.release(reservation)` releases it without committing (error path).
+  Threading the reservation handle through `check → commit/release` makes the
+  gate atomic across the awaited call WITHOUT holding the lock across the HTTP
+  call, and concurrent releases are attributable to the specific call that
+  reserved them (the handle carries the reserved estimate). The litellm wrapper
+  (`wrap.completion` / `wrap.acompletion`, and the streamed metering path
+  `meter_sync_stream` / `meter_async_stream`) thread the reservation
+  end-to-end and `release` on the delegate-exception path so no reservation leaks
+  into `pending`. `Budget.check` / `would_exceed` remain non-mutating peeks
+  (backward-compatible) so legacy callers and tests that ignore the return value
+  cannot leak a reservation; the race-free path is `reserve`.
+- **The pre-call completion-token upper bound is now a true upper bound for
+  streamed calls without `max_tokens`.** `DEFAULT_MAX_COMPLETION_TOKENS = 1024`
+  (used by `estimate_call` whenever a caller omits `max_tokens` — the common case
+  for streamed agent calls) was not an upper bound: real streamed completions
+  routinely produce 4k-16k tokens on modern frontier models, so the "upper-bound"
+  estimate passed the pre-call gate, and the post-call commit of the real (larger)
+  usage jumped the ledger past the ceiling with no retroactive trip — the fuse
+  only gates the NEXT call, which for a one-shot streamed task never comes. The
+  default is now `8192`, and when `litellm.model_cost` carries a model-specific
+  `max_output_tokens` that is larger, that genuine cap is preferred (the static
+  8192 is the floor fallback), so the estimate is an actual upper bound for
+  typical streamed completions and the pre-call gate trips instead of the
+  post-call overshoot. A caller-supplied `max_tokens` still overrides both
+  (unchanged).
+
+### Added
+
+- `agentfuse.budget.Reservation` — the pending-reservation handle returned by
+  `Budget.reserve`, threaded through the litellm wrapper to `commit` / `release`
+  so concurrent fan-out is race-free. Exposes `estimated_usd` /
+  `estimated_tokens` / `.active`.
+- `agentfuse.fuse.gate_with_reservation` — the reserving variant of `gate` used
+  by `wrap.completion` / `wrap.acompletion`; returns `(estimate, Reservation)`
+  (or `(0.0, None)` with no active budget). `gate` is kept as the float-returning
+  non-mutating peek for backward compatibility.
+
 ## [0.4.0] - 2026-07-21
 
 Two doc/metadata correctness fixes plus one small in-process trip hook. Every
@@ -155,7 +227,8 @@ the money is never spent.
   `spent` / `ceiling` / `would_spend` fields.
 - 30 tests (`test_budget` ×16, `test_fuse` ×14); CI on Python 3.11 / 3.12.
 
-[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.5.0
 [0.4.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.4.0
 [0.3.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.3.0
 [0.2.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.2.0

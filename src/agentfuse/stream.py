@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterator, Iterator
 
-from agentfuse.budget import Budget
+from agentfuse.budget import Budget, Reservation
 from agentfuse.pricing import actual_cost, actual_tokens
 
 logger = logging.getLogger("agentfuse.stream")
@@ -60,13 +60,19 @@ def is_stream_response(response: Any) -> bool:
 
 
 def _commit_from_chunks(
-    budget: Budget, last_usage_holder: dict[str, Any], estimated_usd: float
+    budget: Budget,
+    last_usage_holder: dict[str, Any],
+    estimated_usd: float,
+    reservation: "Reservation | None" = None,
 ) -> None:
     """Commit a streamed call's spend once its chunks are exhausted.
 
     Prefers the real ``Usage`` captured off the final chunk; falls back to the
-    pre-call upper-bound estimate so the cumulative ledger still advances (and the
-    fuse can still trip on the next call) when the provider gave us no usage.
+    pre-call upper-bound estimate so the cumulative ledger still advances (and
+    the fuse can still trip on the next call) when the provider gave us no usage.
+    The ``reservation`` (from the v0.5.0 race-free gate) is released atomically
+    with the commit so the pending estimate is settled alongside the confirmed
+    spend and concurrent callers stop seeing it as in-flight.
     """
     usage_obj = last_usage_holder.get("usage")
     if usage_obj is not None:
@@ -74,7 +80,7 @@ def _commit_from_chunks(
         shim = _UsageShim(usage_obj, last_usage_holder.get("model"))
         cost = actual_cost(shim)
         tokens = actual_tokens(shim)
-        budget.commit(cost, tokens)
+        budget.commit(cost, tokens, reservation=reservation)
         return
     # No usage emitted by the provider — commit the conservative pre-call estimate
     # so the ledger moves forward instead of silently staying at 0.
@@ -83,7 +89,7 @@ def _commit_from_chunks(
         "($%.6f) so the cumulative fuse still advances",
         estimated_usd,
     )
-    budget.commit(float(estimated_usd), 0)
+    budget.commit(float(estimated_usd), 0, reservation=reservation)
 
 
 class _UsageShim:
@@ -105,13 +111,19 @@ def _extract_usage(chunk: Any, holder: dict[str, Any]) -> None:
 
 
 def meter_sync_stream(
-    stream: Iterator[Any], budget: Budget, estimated_usd: float
+    stream: Iterator[Any],
+    budget: Budget,
+    estimated_usd: float,
+    reservation: "Reservation | None" = None,
 ) -> Iterator[Any]:
     """Wrap a sync streamed response so AgentFuse meters it on exhaustion.
 
     Yields each chunk through unchanged; when the generator is fully consumed (or
     closed), commits the real cost if a usage block was seen, else the pre-call
-    estimate.
+    estimate. The ``reservation`` (from the v0.5.0 race-free gate) is threaded to
+    that commit so the pending estimate is released atomically with the real
+    spend; ``None`` preserves the legacy no-reservation path (e.g. direct callers
+    with no pre-call reserve).
     """
     holder: dict[str, Any] = {}
     committed = False
@@ -121,12 +133,15 @@ def meter_sync_stream(
             yield chunk
     finally:
         if not committed:
-            _commit_from_chunks(budget, holder, estimated_usd)
+            _commit_from_chunks(budget, holder, estimated_usd, reservation)
             committed = True
 
 
 async def meter_async_stream(
-    stream: AsyncIterator[Any], budget: Budget, estimated_usd: float
+    stream: AsyncIterator[Any],
+    budget: Budget,
+    estimated_usd: float,
+    reservation: "Reservation | None" = None,
 ) -> AsyncIterator[Any]:
     """Async variant of :func:`meter_sync_stream`."""
     holder: dict[str, Any] = {}
@@ -137,7 +152,7 @@ async def meter_async_stream(
             yield chunk
     finally:
         if not committed:
-            _commit_from_chunks(budget, holder, estimated_usd)
+            _commit_from_chunks(budget, holder, estimated_usd, reservation)
             committed = True
 
 

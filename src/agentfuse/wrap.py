@@ -37,7 +37,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import litellm
 
-from agentfuse.fuse import commit_actual, current_budget, gate
+from agentfuse.fuse import commit_actual, current_budget, gate_with_reservation
 from agentfuse.stream import is_stream_response, meter_async_stream, meter_sync_stream
 
 # The genuine litellm callables, captured at import time so install/uninstall is
@@ -71,45 +71,74 @@ def completion(*args: Any, real: Callable[..., Any] | None = None, **kwargs: Any
     """Gated synchronous ``litellm.completion``.
 
     Estimates and gates against the active per-task budget *before* delegating;
-    raises :class:`~agentfuse.exceptions.BudgetExceeded` (so the call is never
+    raises :class:`agentfuse.exceptions.BudgetExceeded` (so the call is never
     sent) when it would cross the ceiling. On success, commits the real cost.
     With no active budget this is a transparent pass-through.
+
+    The gate RESERVES the estimate (v0.5.0 fix-budget-check-commit-race) so a
+    concurrent caller cannot also pass against the still-uncommitted ledger; the
+    reservation is released by the commit (success) or by ``release`` (error).
     """
     delegate = real if real is not None else _REAL_COMPLETION
     model, messages, max_tokens = _extract_call_args(args, kwargs)
 
-    # (1) estimate + (2) gate — raises BudgetExceeded BEFORE the delegate runs.
-    # gate() returns the pre-call upper-bound estimate, kept as the streaming
-    # fallback so a streamed call with no usage block still advances the ledger.
-    estimate = gate(model, messages, max_tokens=max_tokens, budget=current_budget())
+    active = current_budget()
+    # (1) estimate + (2) gate — raises BudgetExceeded (reserving nothing) BEFORE
+    # the delegate runs; on the pass path it RESERVES the estimate so a
+    # concurrent caller cannot also pass against the still-uncommitted ledger.
+    estimate, reservation = gate_with_reservation(
+        model, messages, max_tokens=max_tokens, budget=active
+    )
 
-    # (3) delegate to the real litellm only when within budget.
-    response = delegate(*args, **kwargs)
+    try:
+        # (3) delegate to the real litellm only when within budget.
+        response = delegate(*args, **kwargs)
+    except BaseException:
+        # Error path: release the reservation so the pending estimate does not
+        # pin the budget forever (reservation is None when no budget is active).
+        if reservation is not None:
+            active.release(reservation)
+        raise
 
     # (4) post-call commit of the real cost. A streamed response (stream=True)
     # carries no .usage until consumed, so meter it via the stream wrapper
-    # instead — otherwise commit_actual would commit $0 and the cumulative fuse
-    # would never trip on streamed runs.
-    budget = current_budget()
-    if budget is not None and is_stream_response(response):
-        return meter_sync_stream(response, budget, estimate)
-    commit_actual(response, budget=budget)
+    # (which threads the reservation to its commit) instead — otherwise
+    # commit_actual would commit $0 and the cumulative fuse would never trip on
+    # streamed runs.
+    if active is not None and is_stream_response(response):
+        return meter_sync_stream(response, active, estimate, reservation)
+    commit_actual(response, budget=active, reservation=reservation)
     return response
 
 
 async def acompletion(*args: Any, real: Callable[..., Any] | None = None, **kwargs: Any) -> Any:
-    """Gated asynchronous ``litellm.acompletion`` (async variant of :func:`completion`)."""
+    """Gated asynchronous ``litellm.acompletion`` (async variant of :func:`completion`).
+
+    The race-free gate is most consequential here: ``await delegate`` yields
+    control to other tasks in the same loop, so without the reservation a second
+    concurrent ``acompletion`` would gate against the still-uncommitted ledger
+    and both would commit, overshooting the ceiling. The reservation pins the
+    estimate in ``pending`` across the await and is settled by the commit
+    (success) or ``release`` (error).
+    """
     delegate = real if real is not None else _REAL_ACOMPLETION
     model, messages, max_tokens = _extract_call_args(args, kwargs)
 
-    estimate = gate(model, messages, max_tokens=max_tokens, budget=current_budget())
+    active = current_budget()
+    estimate, reservation = gate_with_reservation(
+        model, messages, max_tokens=max_tokens, budget=active
+    )
 
-    response = await delegate(*args, **kwargs)
+    try:
+        response = await delegate(*args, **kwargs)
+    except BaseException:
+        if reservation is not None:
+            active.release(reservation)
+        raise
 
-    budget = current_budget()
-    if budget is not None and is_stream_response(response):
-        return meter_async_stream(response, budget, estimate)
-    commit_actual(response, budget=budget)
+    if active is not None and is_stream_response(response):
+        return meter_async_stream(response, active, estimate, reservation)
+    commit_actual(response, budget=active, reservation=reservation)
     return response
 
 

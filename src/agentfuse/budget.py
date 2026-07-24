@@ -72,6 +72,46 @@ class BudgetSnapshot:
     ceiling_tokens: int | None = None
     spent_tokens: int = 0
     single_call_ceiling: float | None = None
+    pending_usd: float = 0.0
+    pending_tokens: int = 0
+
+
+class Reservation:
+    """Handle to a pending spend reservation created by :meth:`Budget.reserve`.
+
+    Threading the reservation through ``check -> commit/release`` makes the
+    pre-call gate atomic across the awaited LLM call: a concurrent caller that
+    gates while this call is still in-flight sees the reserved amount in the
+    budget's pending balance, so two concurrent estimates cannot both pass
+    against the still-uncommitted ledger and overshoot the ceiling. Pass the
+    handle back to :meth:`Budget.commit` (on success — releases the reservation
+    and commits the real cost) or :meth:`Budget.release` (on the error path —
+    releases the reservation without committing). Failing to do either leaks the
+    reservation into ``pending`` until the handle is eventually released.
+
+    The handle carries the reserved ``(estimated_usd, estimated_tokens)`` so
+    releases are attributable to the specific concurrent call that reserved them
+    (the budget cannot infer which reservation a late commit corresponds to once
+    completion order diverges from reservation order).
+    """
+
+    __slots__ = ("estimated_usd", "estimated_tokens", "_active")
+
+    def __init__(self, estimated_usd: float, estimated_tokens: int) -> None:
+        self.estimated_usd = float(estimated_usd)
+        self.estimated_tokens = int(estimated_tokens)
+        self._active = True
+
+    @property
+    def active(self) -> bool:
+        """``True`` until :meth:`Budget.commit` / :meth:`Budget.release` consumes it."""
+        return self._active
+
+    def __repr__(self) -> str:
+        return (
+            f"Reservation(estimated_usd=${self.estimated_usd:.6f}, "
+            f"estimated_tokens={self.estimated_tokens}, active={self._active})"
+        )
 
 
 class Budget:
@@ -139,6 +179,12 @@ class Budget:
 
         self._spent_usd: float = 0.0
         self._spent_tokens: int = 0
+        # v0.5.0: a pending-reserve balance so the pre-call gate is atomic
+        # across the awaited LLM call. `reserve()` adds an estimate here (so a
+        # concurrent caller sees spent+pending+its_estimate against the
+        # ceiling); `commit()`/`release()` subtract the matching reservation.
+        self._pending_usd: float = 0.0
+        self._pending_tokens: int = 0
         self._lock = threading.Lock()
 
     @property
@@ -153,6 +199,18 @@ class Budget:
         with self._lock:
             return self._spent_tokens
 
+    @property
+    def pending_usd(self) -> float:
+        """USD reserved by in-flight calls (not yet committed or released)."""
+        with self._lock:
+            return self._pending_usd
+
+    @property
+    def pending_tokens(self) -> int:
+        """Tokens reserved by in-flight calls (not yet committed or released)."""
+        with self._lock:
+            return self._pending_tokens
+
     def would_exceed(self, estimated_usd: float, estimated_tokens: int = 0) -> bool:
         """Return ``True`` if committing this estimate would trip any ceiling.
 
@@ -165,17 +223,23 @@ class Budget:
             return self._tripped_reason(estimated_usd, estimated_tokens) is not None
 
     def _tripped_reason(self, estimated_usd: float, estimated_tokens: int) -> str | None:
-        """Return the first tripped ceiling's label, or ``None``. Caller holds the lock."""
+        """Return the first tripped ceiling's label, or ``None``. Caller holds the lock.
+
+        Considers the **pending** reserve from in-flight calls alongside the
+        confirmed spend, so a concurrent caller that gates while another call is
+        still awaited cannot also pass against the still-uncommitted ledger
+        (the v0.5.0 fix-budget-check-commit-race fix).
+        """
         if (
             self.single_call_ceiling is not None
             and estimated_usd > self.single_call_ceiling
         ):
             return "single_call"
-        if self._spent_usd + estimated_usd > self.ceiling_usd:
+        if self._spent_usd + self._pending_usd + estimated_usd > self.ceiling_usd:
             return "usd"
         if (
             self.ceiling_tokens is not None
-            and self._spent_tokens + estimated_tokens > self.ceiling_tokens
+            and self._spent_tokens + self._pending_tokens + estimated_tokens > self.ceiling_tokens
         ):
             return "tokens"
         return None
@@ -235,6 +299,15 @@ class Budget:
         trips first (per-call USD cap, cumulative USD, or cumulative tokens)
         determines the structured fields on the raised exception.
 
+        .. note::
+            ``check`` is a **non-mutating peek**: it considers the current
+            ``spent`` + ``pending`` reserve but reserves nothing itself. The
+            race-free gate (the v0.5.0 fix-budget-check-commit-race fix) is
+            :meth:`reserve`, which the litellm wrapper thread through
+            :meth:`commit` / :meth:`release` so concurrent fan-out cannot both
+            pass against the still-uncommitted ledger. Use ``check`` /
+            ``would_exceed`` only for a side-effect-free peek at the gate state.
+
         If an ``on_trip`` callback is set on this budget (v0.4.0), it is invoked
         with the about-to-be-raised :class:`BudgetExceeded` — fail-soft, outside
         the ledger lock — *before* the exception is raised, so an operator can
@@ -250,33 +323,112 @@ class Budget:
         self._invoke_on_trip(err)
         raise err
 
-    def commit(self, actual_usd: float, actual_tokens: int = 0) -> float:
+    def reserve(
+        self, estimated_usd: float, estimated_tokens: int = 0
+    ) -> Reservation:
+        """Reserve ``estimated_usd`` / ``estimated_tokens`` and return a handle, or raise.
+
+        Like :meth:`check` but **mutating**: on the pass path it adds the estimate
+        to the budget's ``pending`` reserve (so a concurrent caller that gates
+        while this call is still in-flight sees ``spent + pending +
+        its_estimate`` against the ceiling and cannot also pass) and returns a
+        :class:`Reservation` handle. The handle MUST be handed to
+        :meth:`commit` (on success — releases the reservation and commits the real
+        cost) or :meth:`release` (on the error path — releases without
+        committing); otherwise the reservation leaks into ``pending``. On the
+        trip path it raises :class:`BudgetExceeded` (after the ``on_trip`` hook),
+        reserving nothing, exactly like :meth:`check`.
+
+        This closes the Budget.check→await→commit race: before v0.5.0,
+        ``check`` released the lock before ``acompletion`` awaited the delegate,
+        so two concurrent calls both gated against the still-uncommitted ledger
+        and both committed, overshooting by up to ``(concurrency * per-call
+        estimate)``. ``reserve`` holds the estimate in ``pending`` across the
+        await without holding the lock across the HTTP call, and ``commit`` /
+        ``release`` settle it.
+        """
+        with self._lock:
+            reason = self._tripped_reason(estimated_usd, estimated_tokens)
+            if reason is None:
+                self._pending_usd += float(estimated_usd)
+                self._pending_tokens += int(estimated_tokens)
+                return Reservation(estimated_usd, estimated_tokens)
+            err = self._build_exceeded(reason, estimated_usd, estimated_tokens)
+        # Lock released before the user hook runs (mirrors check()).
+        self._invoke_on_trip(err)
+        raise err
+
+    def _release_locked(self, reservation: "Reservation | None") -> None:
+        """Release a pending reservation. Caller MUST hold ``self._lock``.
+
+        Idempotent: ``None`` or an already-released handle is a no-op. Subtracts
+        the reservation's reserved estimate from ``pending`` (clamped at 0 so a
+        misattributed handle cannot drive it negative) and marks the handle
+        inactive.
+        """
+        if reservation is None or not reservation._active:
+            return
+        self._pending_usd = max(0.0, self._pending_usd - reservation.estimated_usd)
+        self._pending_tokens = max(0, self._pending_tokens - reservation.estimated_tokens)
+        reservation._active = False
+
+    def commit(
+        self,
+        actual_usd: float,
+        actual_tokens: int = 0,
+        *,
+        reservation: "Reservation | None" = None,
+    ) -> float:
         """Add confirmed spend to the ledger; return the new USD total.
 
         Called after a call returns, with the real cost (and, optionally, real
         token count) from its ``Usage``. Negative amounts are rejected — the
-        ledger only moves forward.
+        ledger only moves forward. When a ``reservation`` handle from
+        :meth:`reserve` is supplied (the v0.5.0 race-free gate path used by the
+        litellm wrapper), it is released first so the pending estimate is
+        settled atomically with the real-cost commit (concurrent callers stop
+        seeing it as in-flight). Without a handle the commit is the legacy
+        plain accumulate (backward-compatible for callers not on the reserve
+        path, e.g. tests and the streaming fallback when no usage was emitted).
         """
         if actual_usd < 0:
             raise ValueError(f"actual_usd must be >= 0, got {actual_usd!r}")
         if actual_tokens < 0:
             raise ValueError(f"actual_tokens must be >= 0, got {actual_tokens!r}")
         with self._lock:
+            if reservation is not None:
+                self._release_locked(reservation)
             self._spent_usd += float(actual_usd)
             self._spent_tokens += int(actual_tokens)
             return self._spent_usd
 
-    def remaining(self) -> float:
-        """USD left before the ceiling. Clamped at ``0`` once spend reaches it."""
+    def release(self, reservation: "Reservation | None") -> None:
+        """Release a pending reservation WITHOUT committing spend (error path).
+
+        Called when a gated call raised before it could commit (e.g. the delegate
+        raised) so the reserved estimate does not stay pinned in ``pending``
+        forever and block every subsequent call. Idempotent: ``None`` or an
+        already-released handle is a no-op.
+        """
         with self._lock:
-            return max(0.0, self.ceiling_usd - self._spent_usd)
+            self._release_locked(reservation)
+
+    def remaining(self) -> float:
+        """USD left before the ceiling, accounting for in-flight reservations.
+
+        Clamped at ``0`` once confirmed spend + pending reserve reaches the
+        ceiling. (Pending-aware since v0.5.0 so the value reflects concurrent
+        in-flight calls, not just committed spend.)
+        """
+        with self._lock:
+            return max(0.0, self.ceiling_usd - self._spent_usd - self._pending_usd)
 
     def remaining_tokens(self) -> int | None:
-        """Tokens left before the token ceiling, or ``None`` if no token ceiling."""
+        """Tokens left before the token ceiling (pending-aware), or ``None``."""
         with self._lock:
             if self.ceiling_tokens is None:
                 return None
-            return max(0, self.ceiling_tokens - self._spent_tokens)
+            return max(0, self.ceiling_tokens - self._spent_tokens - self._pending_tokens)
 
     def snapshot(self) -> BudgetSnapshot:
         """Return an immutable :class:`BudgetSnapshot` of the current state."""
@@ -285,15 +437,21 @@ class Budget:
                 name=self.name,
                 ceiling_usd=self.ceiling_usd,
                 spent_usd=self._spent_usd,
-                remaining_usd=max(0.0, self.ceiling_usd - self._spent_usd),
+                remaining_usd=max(0.0, self.ceiling_usd - self._spent_usd - self._pending_usd),
                 ceiling_tokens=self.ceiling_tokens,
                 spent_tokens=self._spent_tokens,
                 single_call_ceiling=self.single_call_ceiling,
+                pending_usd=self._pending_usd,
+                pending_tokens=self._pending_tokens,
             )
 
     def __repr__(self) -> str:
         with self._lock:
             extra = ""
+            if self._pending_usd > 0 or self._pending_tokens > 0:
+                extra += (
+                    f", pending=${self._pending_usd:.4f}/{self._pending_tokens}t"
+                )
             if self.ceiling_tokens is not None:
                 extra += f", tokens={self._spent_tokens}/{self.ceiling_tokens}"
             if self.single_call_ceiling is not None:
@@ -302,7 +460,7 @@ class Budget:
                 f"Budget(name={self.name!r}, "
                 f"spent=${self._spent_usd:.4f}, "
                 f"ceiling=${self.ceiling_usd:.2f}, "
-                f"remaining=${max(0.0, self.ceiling_usd - self._spent_usd):.4f}{extra})"
+                f"remaining=${max(0.0, self.ceiling_usd - self._spent_usd - self._pending_usd):.4f}{extra})"
             )
 
 
