@@ -5,6 +5,7 @@
   "host": "agentfuse-sdk.lei6393.com",
   "lang": { "primary": "zh", "toggle": true },
   "accent": ["#dc2626"],
+  "content_version": "v0.5.0",
   "hero": {
     "eyebrow": { "zh": "本地 · 无账号 · 两行接入", "en": "Local · No account · Two-line setup" },
     "headline": {
@@ -12,8 +13,8 @@
       "en": "Trips before your Agent\nburns your budget"
     },
     "sub": {
-      "zh": "给单次任务设一个硬上限——下一次调用要把花费推过天花板时，在它发出之前就把循环掐断，钱根本没花出去。这是执行式熔断，不是事后画一张成本图。",
-      "en": "Set a hard ceiling on one task. When the next call would push spend past it, the loop is cut before the call ever goes out — the money is never spent. An enforcing fuse, not an after-the-fact cost chart."
+      "zh": "给单次任务设一个硬上限——下一次调用要把花费推过天花板时，在它发出之前就把循环掐断，钱根本没花出去。同步、异步、并发扇出、流式调用，天花板都成立。这是执行式熔断，不是事后画一张成本图。",
+      "en": "Set a hard ceiling on one task. When the next call would push spend past it, the loop is cut before the call ever goes out — the money is never spent. Sync, async, parallel fan-out, streaming — the ceiling holds in every shape your Agent runs. An enforcing fuse, not an after-the-fact cost chart."
     },
     "command": "agentfuse demo",
     "cta": { "zh": "开始使用", "en": "Get started" },
@@ -23,34 +24,34 @@
     {
       "title": { "zh": "钱花出去之前就拦下", "en": "Blocks the call before the money is spent" },
       "body": {
-        "zh": "保险丝在调用发出之前估出这次的花费上界，一旦会把累计推过天花板就直接掐断——那次超预算的调用根本没发出去，钱也没花出去。不是事后报账。",
-        "en": "Before a call goes out, the fuse estimates its upper-bound cost; the moment that would push the cumulative total past the ceiling, it cuts in — the over-budget call is never sent and the money is never spent. Not an after-the-fact report."
+        "zh": "保险丝在调用发出之前估出这次的花费上界，一旦会把累计推过天花板就直接掐断——那次超预算的调用根本没发出去，钱也没花出去。就算 Agent 并发扇出多个调用，每次都先扣占位再发，谁也不会趁对方在途时溜过天花板。不是事后报账。",
+        "en": "Before a call goes out, the fuse estimates its upper-bound cost; the moment that would push the cumulative total past the ceiling, it cuts in — the over-budget call is never sent and the money is never spent. Even when your Agent fans out parallel calls, each reserves its slice up front so none slips through while another is in flight. Not an after-the-fact report."
       },
       "chips": [
         "› 调用从不发出",
-        "› 钱从不花出去"
+        "› 并发也拦得住"
       ]
     },
     {
       "title": { "zh": "两行接入，现有代码不用改", "en": "Two lines, your existing code untouched" },
       "body": {
-        "zh": "把 Agent 的主调用包进一个作用域，或装一次接管 LLM 入口——你已经在用的调用方式会被自动拦截计量，不用为每个 provider 改一遍代码。",
-        "en": "Wrap your Agent's main call in one scope, or install once to take over the LLM entry point — the calls you already make get gated and metered automatically, no per-provider code rewrite."
+        "zh": "把 Agent 的主调用包进一个作用域，或装一次接管 LLM 入口——你已经在用的调用方式会被自动拦截计量，不用为每个 provider 改一遍代码。同步函数和异步函数都一样：装饰器认得 async，预算作用域会一直撑到协程真正跑完，不会再被静默绕过。",
+        "en": "Wrap your Agent's main call in one scope, or install once to take over the LLM entry point — the calls you already make get gated and metered automatically, no per-provider code rewrite. Sync and async functions alike: the decorator recognizes async, and the budget scope stays bound until the coroutine actually finishes — never silently bypassed again."
       },
       "chips": [
         "› 作用域即预算窗口",
-        "› 装一次即接管"
+        "› async 也照常拦"
       ]
     },
     {
       "title": { "zh": "流式调用也照算进账", "en": "Streaming calls count too" },
       "body": {
-        "zh": "Agent 最常用的流式调用，过去会因为读不到用量而记成零花费、保险丝永远不跳。现在流一耗尽就按真实用量记账，拿不到用量就按调用前的保守上界记——累计熔断对流式照样生效。",
-        "en": "The streaming calls agents actually use used to read as zero spend because usage arrived too late, so the fuse never tripped. Now each stream is metered on exhaustion — real usage when the provider emits it, else the conservative pre-call upper bound — so the cumulative fuse holds on streamed runs too."
+        "zh": "Agent 最常用的流式调用，过去会因为读不到用量而记成零花费、保险丝永远不跳。现在流一耗尽就按真实用量记账，拿不到用量就按调用前的保守上界记——而且这个上界会按模型实际能吐的长度收紧，不再是写死的小数字。累计熔断对流式照样生效。",
+        "en": "The streaming calls agents actually use used to read as zero spend because usage arrived too late, so the fuse never tripped. Now each stream is metered on exhaustion — real usage when the provider emits it, else a conservative pre-call upper bound that tightens to what the model can actually output, not a fixed small number. The cumulative fuse holds on streamed runs too."
       },
       "chips": [
         "› 流耗尽即记账",
-        "› 累计照样跳闸"
+        "› 上界按模型收紧"
       ]
     },
     {
