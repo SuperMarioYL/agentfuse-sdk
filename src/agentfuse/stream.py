@@ -47,7 +47,28 @@ def is_stream_response(response: Any) -> bool:
     The check is deliberately conservative: anything that already exposes a
     truthy ``.usage`` is treated as a finished response (the wrapper commits it
     directly), so we never double-wrap a normal response.
+
+    .. note::
+
+        litellm's ``ModelResponse`` is ALSO iterable (pydantic's ``__iter__``
+        yields ``(field, value)`` tuples), and ``.usage`` is attached dynamically
+        rather than being a guaranteed core field — so a non-stream completion
+        that returns no token usage (common for open / self-hosted models via
+        ollama / watsonx) arrives WITHOUT ``.usage``. Without the guard below
+        such a finished ``ModelResponse`` would be misclassified as a stream:
+        the wrapper would return the metering GENERATOR instead of the
+        ``ModelResponse`` (so ``resp.choices[0].message.content`` raises
+        ``AttributeError``) and, because the generator is never iterated, its
+        ``finally`` never runs and the pre-call ``Reservation`` leaks into the
+        budget's ``pending`` balance forever. So litellm's finished response type
+        is rejected BEFORE the iterable check — an object exposing ``.choices``
+        (the ``ModelResponse`` marker the stream wrapper never carries) is a
+        finished response regardless of ``.usage``.
     """
+    # Reject litellm's finished (non-streamed) ModelResponse BEFORE the iterable
+    # check: it carries .choices and is iterable, and may arrive without .usage.
+    if hasattr(response, "choices"):
+        return False
     usage = getattr(response, "usage", None)
     if usage is not None:
         # A finished response with a real usage block — not a stream.
@@ -63,6 +84,7 @@ def _commit_from_chunks(
     budget: Budget,
     last_usage_holder: dict[str, Any],
     estimated_usd: float,
+    estimated_tokens: int = 0,
     reservation: "Reservation | None" = None,
 ) -> None:
     """Commit a streamed call's spend once its chunks are exhausted.
@@ -73,6 +95,16 @@ def _commit_from_chunks(
     The ``reservation`` (from the v0.5.0 race-free gate) is released atomically
     with the commit so the pending estimate is settled alongside the confirmed
     spend and concurrent callers stop seeing it as in-flight.
+
+    The no-usage fallback commits BOTH the pre-call USD estimate AND the pre-call
+    token estimate (mirroring the USD-estimate fallback on the same path). The
+    pre-call ``reserve()`` had correctly added ``est_tokens`` to the budget's
+    pending-token ledger; committing ``0`` tokens here (as v0.5.0 did) would
+    release the reservation (subtracting ``est_tokens`` from pending) while
+    adding ``0`` to spent-tokens, freezing the cumulative token ledger at ``0``
+    for every streamed no-usage call and leaving the ``ceiling_tokens`` fuse
+    inert for the dominant streamed call mode (ollama / watsonx self-hosted
+    models that omit a usage block).
     """
     usage_obj = last_usage_holder.get("usage")
     if usage_obj is not None:
@@ -83,13 +115,16 @@ def _commit_from_chunks(
         budget.commit(cost, tokens, reservation=reservation)
         return
     # No usage emitted by the provider — commit the conservative pre-call estimate
-    # so the ledger moves forward instead of silently staying at 0.
+    # so the ledger moves forward instead of silently staying at 0. Commit the
+    # token estimate too so the cumulative token fuse still advances on the
+    # dominant streamed no-usage call mode (the USD estimate alone is not enough).
     logger.debug(
         "streamed response carried no usage; committing the pre-call estimate "
-        "($%.6f) so the cumulative fuse still advances",
+        "($%.6f, %d tokens) so the cumulative fuse still advances",
         estimated_usd,
+        estimated_tokens,
     )
-    budget.commit(float(estimated_usd), 0, reservation=reservation)
+    budget.commit(float(estimated_usd), int(estimated_tokens), reservation=reservation)
 
 
 class _UsageShim:
@@ -114,6 +149,7 @@ def meter_sync_stream(
     stream: Iterator[Any],
     budget: Budget,
     estimated_usd: float,
+    estimated_tokens: int = 0,
     reservation: "Reservation | None" = None,
 ) -> Iterator[Any]:
     """Wrap a sync streamed response so AgentFuse meters it on exhaustion.
@@ -124,6 +160,11 @@ def meter_sync_stream(
     that commit so the pending estimate is released atomically with the real
     spend; ``None`` preserves the legacy no-reservation path (e.g. direct callers
     with no pre-call reserve).
+
+    ``estimated_tokens`` is the pre-call token upper bound (threaded from the
+    reservation at the wrap.py call site) so the no-usage fallback commits a
+    non-zero token estimate and the cumulative token fuse still advances on the
+    dominant streamed no-usage call mode — not just the USD fuse.
     """
     holder: dict[str, Any] = {}
     committed = False
@@ -133,7 +174,9 @@ def meter_sync_stream(
             yield chunk
     finally:
         if not committed:
-            _commit_from_chunks(budget, holder, estimated_usd, reservation)
+            _commit_from_chunks(
+                budget, holder, estimated_usd, estimated_tokens, reservation
+            )
             committed = True
 
 
@@ -141,6 +184,7 @@ async def meter_async_stream(
     stream: AsyncIterator[Any],
     budget: Budget,
     estimated_usd: float,
+    estimated_tokens: int = 0,
     reservation: "Reservation | None" = None,
 ) -> AsyncIterator[Any]:
     """Async variant of :func:`meter_sync_stream`."""
@@ -152,7 +196,9 @@ async def meter_async_stream(
             yield chunk
     finally:
         if not committed:
-            _commit_from_chunks(budget, holder, estimated_usd, reservation)
+            _commit_from_chunks(
+                budget, holder, estimated_usd, estimated_tokens, reservation
+            )
             committed = True
 
 

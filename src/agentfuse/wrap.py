@@ -106,7 +106,11 @@ def completion(*args: Any, real: Callable[..., Any] | None = None, **kwargs: Any
     # commit_actual would commit $0 and the cumulative fuse would never trip on
     # streamed runs.
     if active is not None and is_stream_response(response):
-        return meter_sync_stream(response, active, estimate, reservation)
+        # Thread the pre-call token estimate (carried on the reservation) so the
+        # streaming no-usage fallback commits non-zero tokens and the cumulative
+        # token fuse still advances on the dominant streamed no-usage call mode.
+        est_tokens = reservation.estimated_tokens if reservation is not None else 0
+        return meter_sync_stream(response, active, estimate, est_tokens, reservation)
     commit_actual(response, budget=active, reservation=reservation)
     return response
 
@@ -137,7 +141,11 @@ async def acompletion(*args: Any, real: Callable[..., Any] | None = None, **kwar
         raise
 
     if active is not None and is_stream_response(response):
-        return meter_async_stream(response, active, estimate, reservation)
+        # Thread the pre-call token estimate (carried on the reservation) so the
+        # streaming no-usage fallback commits non-zero tokens and the cumulative
+        # token fuse still advances on the dominant streamed no-usage call mode.
+        est_tokens = reservation.estimated_tokens if reservation is not None else 0
+        return meter_async_stream(response, active, estimate, est_tokens, reservation)
     commit_actual(response, budget=active, reservation=reservation)
     return response
 
