@@ -54,3 +54,6 @@ CLAUDE.md
 .build_metadata.slices.yaml
 .build_metadata*.yaml
 BUILD_BLOCKED_*.md
+
+# Publish pipeline marker — removed and gitignored (publish_repo.sh manages it locally)
+PUBLISH_BLOCKED.md
