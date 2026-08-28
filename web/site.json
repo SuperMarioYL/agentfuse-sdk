@@ -5,7 +5,7 @@
   "host": "agentfuse-sdk.lei6393.com",
   "lang": { "primary": "zh", "toggle": true },
   "accent": ["#dc2626"],
-  "content_version": "v0.5.0",
+  "content_version": "v0.7.0",
   "hero": {
     "eyebrow": { "zh": "本地 · 无账号 · 两行接入", "en": "Local · No account · Two-line setup" },
     "headline": {

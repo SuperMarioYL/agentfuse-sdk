@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-29
+
+Two maintenance fixes that close the version/release-notes drift the v0.6.0 ship
+introduced. No behavior change to the enforcement core; both stay *executive*
+metadata/doc fixes. Pinned by `tests/test_version.py` and `tests/test_changelog.py`.
+
+### Fixed
+
+- **Package version no longer lies about its own release.** The v0.6.0 tag
+  shipped with `__version__ = "0.5.0"` in `src/agentfuse/__init__.py` and
+  `version = "0.5.0"` in `pyproject.toml` (every prior release bumped it; the
+  v0.6.0 ship forgot), so `agentfuse --version` reported `0.5.0` on a v0.6.0
+  install and `pip install` of v0.6.0 installed `agentfuse-0.5.0`; `web/site.json`
+  `content_version` was `v0.5.0` for the same reason. Bumped all to `0.7.0` and
+  added `tests/test_version.py` pinning `agentfuse.__version__ == "0.7.0"` (red on
+  the unfixed source) and asserting it matches the `[project] version` in
+  `pyproject.toml` so the two sources can't drift apart again.
+- **CHANGELOG + README release notes back in step with the shipped releases.**
+  The v0.6.0 fixes shipped with NO `## [0.6.0]` CHANGELOG section and the
+  `[Unreleased]` compare was still based at `v0.5.0...HEAD` (the exact drift the
+  v0.4.0 `fix-changelog-missing-v030-link-and-stale-unreleased-base` milestone
+  corrected, recurring). Backfilled the `[0.6.0]` section (below), added this
+  `[0.7.0]` section, added the `[0.6.0]`/`[0.7.0]` link references, re-based
+  `[Unreleased]` at `v0.7.0...HEAD`, and appended `v0.5.0`/`v0.6.0`/`v0.7.0`
+  entries to the README roadmap. `tests/test_changelog.py` pins the structure.
+
+## [0.6.0] - 2026-07-29
+
+Two correctness fixes that keep the streaming fuse honest where it was quietly
+leaking. Both stay *executive* guardrails; pinned by `tests/test_v060_fixes.py`.
+
+### Fixed
+
+- **The stream detector no longer misclassifies a usage-less litellm
+  `ModelResponse` as a stream (`agentfuse.stream.is_stream_response`).** litellm's
+  finished `ModelResponse` is iterable (pydantic `__iter__`) and, when a provider
+  (ollama / watsonx self-hosted models) emits no token usage, arrives WITHOUT
+  `.usage`. The v0.5.0 detector only treated a response as finished when it
+  carried a truthy `.usage`, so such a finished `ModelResponse` was classified as
+  a stream: the wrapper returned the metering GENERATOR instead of the
+  `ModelResponse` (`resp.choices[0].message.content` raised `AttributeError`)
+  and, because the generator was never iterated, its `finally` never ran, so the
+  pre-call `Reservation` leaked into the budget's `pending` balance forever,
+  pinning the budget. `is_stream_response` now rejects litellm's finished
+  `ModelResponse` (it exposes `.choices`) BEFORE the iterable check.
+- **The streaming meter no longer drops the pre-call token estimate
+  (`agentfuse.stream.meter_sync_stream` / `meter_async_stream`).** The v0.5.0
+  streaming meter took `estimated_usd` but NOT `estimated_tokens`; the no-usage
+  fallback committed `0` tokens, so the cumulative token ledger stayed frozen at
+  `0` for every streamed no-usage call and the `ceiling_tokens` fuse never tripped
+  on the dominant streamed no-usage call mode. `estimated_tokens` is now threaded
+  through both meter functions (and the `wrap.py` call sites) and committed in the
+  no-usage fallback, mirroring the existing USD-estimate fallback on the same
+  path.
+
 ## [0.5.0] - 2026-07-25
 
 Three correctness fixes that close the last ways the fuse could silently fail to
@@ -227,7 +282,9 @@ the money is never spent.
   `spent` / `ceiling` / `would_spend` fields.
 - 30 tests (`test_budget` ×16, `test_fuse` ×14); CI on Python 3.11 / 3.12.
 
-[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.7.0
+[0.6.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.6.0
 [0.5.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.5.0
 [0.4.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.4.0
 [0.3.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.3.0

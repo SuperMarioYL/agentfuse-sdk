@@ -267,6 +267,21 @@ they click Upgrade → three-step Stripe Checkout → the control plane is live.
       the `BudgetExceeded` right before the over-budget call is blocked, so an
       operator can wire the trip event into their own webhook / audit / metric
       in-process — a minimal in-process precursor to the §1 `report_to=` cloud hook.
+- [x] **v0.5 · Async + concurrency + streaming upper bound**: `@fuse`/`@fused`
+      no longer silently bypass the fuse for `async def` (the wrapper now `await`s
+      the body inside the budget scope); the pre-call gate is atomic across the
+      awaited LLM call (`Budget.reserve` + `Reservation`) so concurrent fan-out
+      cannot overshoot the ceiling; and `DEFAULT_MAX_COMPLETION_TOKENS` rose to
+      8192 (model-aware `max_output_tokens` preferred when larger) so the
+      no-`max_tokens` estimate is a true upper bound for streamed completions.
+- [x] **v0.6 · Streaming detector + meter fix**: `is_stream_response` no longer
+      misclassifies a usage-less litellm `ModelResponse` as a stream (which leaked
+      a `Reservation` into `pending` forever), and the streaming meter threads the
+      pre-call token estimate so `ceiling_tokens` trips on streamed no-usage calls.
+- [x] **v0.7 · Version + release-notes fix**: bumped the stale package version
+      (v0.6.0 shipped at `0.5.0`) and pinned it with a regression test; backfilled
+      the missing `[0.6.0]` CHANGELOG section, re-based `[Unreleased]`, and synced
+      this roadmap.
 - [ ] **AgentFuse Cloud**: team-level central budget policy, audit log, ceiling
       alerts (paid hosted control plane).
 - [ ] Cross-run budget rollover (the v0.2 record is read-only history; rollover

@@ -198,6 +198,9 @@ LiteLLM 仍负责统一各 provider 的实际调用、定价表与 usage 字段�
 - [x] **v0.2 · 加固**：未定价模型失败即熔断（`on_unpriced`）、token 上限（`max_total_tokens`）与单次调用硬上限（`single_call_ceiling`），外加一个可选的 JSONL 花费记录，喂给 `agentfuse status --log`。
 - [x] **v0.3 · 流式计量 + 命名修正**：`stream=True` 的调用现在会在流耗尽时正确计量（有 usage 用真实花费，无 usage 用调用前估算上界），累计熔断不再对流式调用失效——这是 agent 最常用的调用模式。同时把 `Fuse` 的累计 token 上限关键字从易混淆的 `max_tokens` 改名为 `max_total_tokens`（旧名保留为弃用别名）。
 - [x] **v0.4 · 元数据/文档订正 + on_trip 钩子**：修正 pyproject 与双 README 里指向不存在的 `supermario_leo/agentfuse` 的仓库链接（改为真实 `SuperMarioYL/agentfuse-sdk`），补齐 CHANGELOG 缺失的 `[0.3.0]` 链接引用并修正 `[Unreleased]` 的 compare 基线；新增可选的 `on_trip` 回调（`Budget`/`Fuse`/`task`/`@fuse` 都接受），在熔断抛出前以 `BudgetExceeded` 为参数 fail-soft 触发，方便把跳闸事件接进自己的 webhook/审计/metric——为 §1 的 `report_to=` 云端钩子做最小在进程内的铺垫。
+- [x] **v0.5 · 异步 + 并发 + 流式上界**：`@fuse`/`@fused` 不再对 `async def` 静默绕过熔断（包装器现在在预算作用域内 `await` 协程体）；pre-call 网关在 await 的 LLM 调用期间原子化（`Budget.reserve` + `Reservation`），并发扇出无法越过天花板；`DEFAULT_MAX_COMPLETION_TOKENS` 提到 8192（更大时优先用模型自己的 `max_output_tokens`），让无 `max_tokens` 的估算是流式补全的真正上界。
+- [x] **v0.6 · 流式检测 + 计量修复**：`is_stream_response` 不再把不带 usage 的 litellm `ModelResponse` 误判成流（否则 `Reservation` 永远泄漏进 `pending`）；流式计量透传调用前 token 估算，让 `ceiling_tokens` 在流式无 usage 调用（ollama / watsonx）上也能跳闸。
+- [x] **v0.7 · 版本 + 发布说明修复**：修正 v0.6.0 遗漏的版本号（停在 0.5.0）并用回归测试钉住；补回缺失的 `[0.6.0]` CHANGELOG 段落、重置 `[Unreleased]` 基线、并同步本路线图。
 - [ ] **AgentFuse Cloud**：团队级集中预算策略、审计日志、触顶告警（付费托管控制面）。
 - [ ] 跨 run 预算滚存（v0.2 的记录是只读历史；滚存仍延后）。
 - [ ] 非 LLM 云资源（算力/存储/带宽）计量。
