@@ -282,6 +282,16 @@ they click Upgrade → three-step Stripe Checkout → the control plane is live.
       (v0.6.0 shipped at `0.5.0`) and pinned it with a regression test; backfilled
       the missing `[0.6.0]` CHANGELOG section, re-based `[Unreleased]`, and synced
       this roadmap.
+- [x] **v0.8 · Unpriced-model USD fuse fix + demo fix**: under `on_unpriced='fallback'`,
+      the post-call commit for an unpriced model (ollama / watsonx) no longer
+      freezes the cumulative USD ledger at $0 (because `actual_cost` returns $0);
+      the new `resolve_commit_cost` falls back to the conservative pre-call
+      estimate when the real cost is unresolvable, so the USD ceiling trips on
+      self-hosted models — the same root class as the v0.6.0 streaming no-usage
+      fallback. Also vendored `agentfuse demo` into the package
+      (`agentfuse._runaway_demo`) so the README `pip install agentfuse` →
+      `agentfuse demo` quickstart works from a wheel install (previously raised
+      "Bundled demo not found" because `examples/` is not shipped in the wheel).
 - [ ] **AgentFuse Cloud**: team-level central budget policy, audit log, ceiling
       alerts (paid hosted control plane).
 - [ ] Cross-run budget rollover (the v0.2 record is read-only history; rollover

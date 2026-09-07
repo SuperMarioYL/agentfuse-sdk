@@ -34,7 +34,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
 from agentfuse.budget import Budget, Reservation, TripCallback
 from agentfuse.exceptions import BudgetExceeded
-from agentfuse.pricing import actual_cost, actual_tokens, estimate_call
+from agentfuse.pricing import estimate_call, resolve_commit_cost
 
 # The active per-task budget for the current context (thread/async-local).
 _ACTIVE_BUDGET: contextvars.ContextVar[Budget | None] = contextvars.ContextVar(
@@ -192,12 +192,19 @@ def commit_actual(
     is settled alongside the confirmed spend so concurrent callers stop seeing
     it as in-flight). Returns the committed amount, or ``0.0`` when there is no
     active budget.
+
+    When the real USD cost cannot be resolved (an unpriced model whose
+    ``Usage`` still reports real tokens), the pre-call ``estimated_usd``
+    (carried on the reservation) is committed instead so the cumulative USD
+    ledger still advances and the ceiling holds — mirroring the streaming
+    no-usage fallback and closing the v0.8.0 ``on_unpriced='fallback'``
+    USD-bypass gap.
     """
     active = budget if budget is not None else current_budget()
     if active is None:
         return 0.0
-    cost = actual_cost(response)
-    tokens = actual_tokens(response)
+    estimated_usd = reservation.estimated_usd if reservation is not None else 0.0
+    cost, tokens = resolve_commit_cost(response, estimated_usd)
     active.commit(cost, tokens, reservation=reservation)
     return cost
 

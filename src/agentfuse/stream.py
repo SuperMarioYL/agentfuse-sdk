@@ -31,7 +31,7 @@ import logging
 from typing import Any, AsyncIterator, Iterator
 
 from agentfuse.budget import Budget, Reservation
-from agentfuse.pricing import actual_cost, actual_tokens
+from agentfuse.pricing import resolve_commit_cost
 
 logger = logging.getLogger("agentfuse.stream")
 
@@ -108,10 +108,14 @@ def _commit_from_chunks(
     """
     usage_obj = last_usage_holder.get("usage")
     if usage_obj is not None:
-        # Build a tiny shim that exposes .usage so the existing pricing helpers work.
+        # Build a tiny shim that exposes .usage so the pricing helpers work.
         shim = _UsageShim(usage_obj, last_usage_holder.get("model"))
-        cost = actual_cost(shim)
-        tokens = actual_tokens(shim)
+        # When the provider emits a usage block but litellm cannot price the
+        # model (an unpriced self-hosted model), resolve_commit_cost falls back
+        # to the pre-call estimated_usd so the USD ledger still advances and the
+        # USD ceiling holds (mirrors the no-usage fallback below) — closing the
+        # v0.8.0 on_unpriced='fallback' USD-bypass gap on the streaming path.
+        cost, tokens = resolve_commit_cost(shim, estimated_usd)
         budget.commit(cost, tokens, reservation=reservation)
         return
     # No usage emitted by the provider — commit the conservative pre-call estimate

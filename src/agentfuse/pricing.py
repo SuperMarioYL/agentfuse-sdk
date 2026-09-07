@@ -262,3 +262,42 @@ def actual_tokens(response: Any) -> int:
         return int(prompt or 0) + int(completion or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def resolve_commit_cost(response: Any, estimated_usd: float) -> tuple[float, int]:
+    """Return the ``(usd, tokens)`` to commit for a finished call.
+
+    Prefers the real cost / tokens read back from the response's ``Usage``
+    (:func:`actual_cost` / :func:`actual_tokens`). But when ``actual_cost``
+    cannot price the response — a model missing from ``litellm.model_cost``
+    whose ``Usage`` still reports real tokens, the dominant case for
+    self-hosted / open models via ollama / watsonx — it returns ``0.0``, so a
+    naive commit would freeze the cumulative USD ledger at ``$0`` and the USD
+    ceiling would never trip. That silently bypasses the fuse for the exact
+    unpriced-model audience ``on_unpriced='fallback'`` was designed to bound
+    (the pre-call gate conservatively reserves ``estimated_usd`` > 0, then the
+    post-call commit of ``0.0`` throws it away). This is the USD-cost half of
+    the same bug class the v0.6.0 ``fix-stream-meter-drops-token-estimate``
+    milestone corrected on the streaming-no-usage path.
+
+    When the real USD cost resolves to ``0.0`` but the call carried real usage
+    (``tokens > 0``) and a non-zero pre-call estimate is available, fall back to
+    the conservative ``estimated_usd`` so the USD ledger still advances and the
+    ceiling holds (mirroring the no-usage estimate fallback in
+    :mod:`agentfuse.stream`). The ``estimated_usd > 0`` guard preserves the
+    ``on_unpriced='warn-pass'`` opt-out (its pre-call estimate is ``0.0``, so
+    the USD fuse still cannot bound it — by design) and leaves genuinely-free
+    priced models (estimate ``0.0``) committing ``0.0``.
+    """
+    cost = actual_cost(response)
+    tokens = actual_tokens(response)
+    if cost == 0.0 and tokens > 0 and estimated_usd > 0.0:
+        logger.warning(
+            "could not price response (model=%r) for the post-call commit; "
+            "committing the pre-call estimate $%.6f so the USD fuse still "
+            "advances (mirrors the streaming no-usage fallback)",
+            getattr(response, "model", None) or "",
+            estimated_usd,
+        )
+        return float(estimated_usd), tokens
+    return cost, tokens

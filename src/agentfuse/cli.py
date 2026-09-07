@@ -126,13 +126,29 @@ def demo(ceiling_usd: float) -> None:
 
 
 def _load_runaway_agent():
-    """Import the bundled ``examples/runaway_agent`` demo module.
+    """Import the bundled ``runaway_agent`` demo module.
 
-    Tries the importable ``examples`` package first (works when the repo root is
-    on ``sys.path``, e.g. running from a clone). Falls back to loading the file
-    directly relative to this package, so ``agentfuse demo`` works even when only
-    the wheel is installed and ``examples/`` was shipped alongside it.
+    The demo is vendored inside the installed package as
+    ``agentfuse._runaway_demo`` so ``agentfuse demo`` works from a ``pip install``
+    of the wheel — ``examples/`` is NOT shipped in the wheel
+    (``[tool.hatch.build.targets.wheel] packages = ["src/agentfuse"]`` packages
+    only ``src/agentfuse``), so the previous ``examples/`` loader raised
+    ``ClickException`` on a wheel install. The package module is preferred first
+    (always available on wheel + source); the ``examples/`` loaders are kept as a
+    source-checkout fallback so edits to ``examples/runaway_agent.py`` are still
+    picked up without reinstalling.
     """
+    # Preferred: the vendored package module — importable from a wheel install.
+    try:
+        from agentfuse import _runaway_demo
+
+        return _runaway_demo
+    except ImportError:  # pragma: no cover - the module always ships with the pkg
+        pass
+
+    # Source-checkout fallback: load the repo-root examples/ entrypoint
+    # directly (it re-exports agentfuse._runaway_demo) so a checkout without an
+    # install still runs the demo.
     try:
         from examples import runaway_agent  # type: ignore[import-not-found]
 
@@ -148,8 +164,8 @@ def _load_runaway_agent():
     candidate = here.parents[2] / "examples" / "runaway_agent.py"
     if not candidate.exists():
         raise click.ClickException(
-            "Bundled demo (examples/runaway_agent.py) not found. Run it directly "
-            "from a source checkout: `python examples/runaway_agent.py`."
+            "Bundled demo not found. Run it directly from a source checkout: "
+            "`python examples/runaway_agent.py`."
         )
     spec = importlib.util.spec_from_file_location("agentfuse_demo_runaway", candidate)
     assert spec and spec.loader

@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-08
+
+Two fixes that close a silent USD-fuse bypass on the exact audience the
+`on_unpriced='fallback'` policy protects, and repair the headline demo on the
+wheel install path. Both stay *executive* guardrails / first-run fixes — no
+dashboard, no monitoring service. Pinned by `tests/test_v080_fixes.py`.
+
+### Fixed
+
+- **Under `on_unpriced='fallback'` the cumulative USD fuse no longer silently
+  bypasses for unpriced/self-hosted models** (`agentfuse.pricing.resolve_commit_cost`,
+  wired through `agentfuse.fuse.commit_actual` and `agentfuse.stream._commit_from_chunks`).
+  The pre-call gate conservatively reserved a non-zero USD estimate for an
+  unpriced model, but the post-call commit threw it away: `pricing.actual_cost`
+  returns `0.0` for a model missing from `litellm.model_cost` (both
+  `litellm.completion_cost` and the `cost_per_token` fallback fail), so
+  `commit_actual` committed `0.0` USD — freezing the cumulative USD ledger so
+  the USD ceiling never tripped for the self-hosted / ollama / watsonx agent
+  audience `fallback` was marketed to bound. This is the USD-cost half of the
+  same bug class the v0.6.0 `fix-stream-meter-drops-token-estimate` milestone
+  corrected on the streaming-no-usage path (committing the pre-call estimate
+  instead of 0); the USD half was never fixed on the non-stream `commit_actual`
+  path or the stream-with-usage `_commit_from_chunks` path. `resolve_commit_cost`
+  now falls back to the pre-call `estimated_usd` when the real USD cost resolves
+  to `0.0` but the call carried real usage (tokens > 0), mirroring the existing
+  no-usage fallback; the `estimated_usd > 0` guard preserves `warn-pass`'s
+  documented opt-out (its estimate is `0.0`, so the USD fuse still cannot bound
+  it by design). Verified: 50 unpriced-model non-stream calls under `fallback`
+  left `spent_usd` pinned at ~$0 and the `$0.50` USD ceiling NEVER tripped on the
+  unfixed v0.7.0 source; after the fix the ledger climbs and the fuse trips.
+- **`agentfuse demo` now runs from a `pip install` of the wheel**
+  (`agentfuse._runaway_demo`, `agentfuse.cli._load_runaway_agent`,
+  `examples/runaway_agent.py`). The README quickstart (`pip install agentfuse`
+  → `agentfuse demo`) was broken on the wheel install path:
+  `[tool.hatch.build.targets.wheel] packages = ["src/agentfuse"]` ships only
+  `src/agentfuse`, so `examples/runaway_agent.py` (repo root) was absent from
+  the wheel and `_load_runaway_agent` raised `ClickException("Bundled demo not
+  found")`. The demo is now vendored inside the installed package as
+  `agentfuse._runaway_demo` (always importable from the wheel), with
+  `examples/runaway_agent.py` a thin re-export so `python examples/runaway_agent.py`
+  from a source checkout still works. The CLI loads the package module first.
+
 ## [0.7.0] - 2026-08-29
 
 Two maintenance fixes that close the version/release-notes drift the v0.6.0 ship
@@ -282,7 +324,8 @@ the money is never spent.
   `spent` / `ceiling` / `would_spend` fields.
 - 30 tests (`test_budget` ×16, `test_fuse` ×14); CI on Python 3.11 / 3.12.
 
-[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.8.0
 [0.7.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.7.0
 [0.6.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.6.0
 [0.5.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.5.0
