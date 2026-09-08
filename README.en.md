@@ -1,325 +1,125 @@
-**English** | [简体中文](./README.md)
+[简体中文](./README.md) · [Website](https://agentfuse-sdk.lei6393.com) · [GitHub](https://github.com/SuperMarioYL/agentfuse-sdk)
 
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:b91c1c,100:f59e0b&height=200&section=header&text=AgentFuse&fontColor=ffffff&fontSize=72&desc=The%20per-task%20spend%20circuit-breaker%20that%20halts%20an%20Agent%20before%20it%20burns%20your%20budget&descSize=17&descAlignY=62" alt="AgentFuse" />
-</p>
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/hero-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/hero-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/hero-dark.svg">
+  <img src="./assets/presentation/hero-light.svg" width="960" alt="Hero diagram">
+</picture>
 
-<p align="center">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
-  <img src="https://img.shields.io/badge/python-3.11%2B-3776AB.svg?logo=python&logoColor=white" alt="Python 3.11+" />
-  <a href="https://github.com/SuperMarioYL/agentfuse-sdk/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-passing-brightgreen.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/badge/PyPI-agentfuse-orange.svg?logo=pypi&logoColor=white" alt="PyPI" />
-  <img src="https://img.shields.io/badge/Agent-circuit--breaker-b91c1c.svg" alt="Agent circuit-breaker" />
-</p>
+# agentfuse-sdk
 
-<p align="center">
-  <b>AgentFuse is the per-task spend circuit-breaker that halts an Agent before it burns your budget.</b>
-</p>
+**Check the next call against the task budget.**
 
----
+AgentFuse SDK places a per-task budget around wrapped LiteLLM calls, reserving estimated cost before delegation and settling it after usage is reported.
 
-> **In one line:** your Agent is running unattended — who's the fuse?
-> AgentFuse puts a **hard ceiling** on a single task. When the *next* LLM call
-> would push cumulative spend past that ceiling, AgentFuse cuts the agent loop
-> **before the call is sent** and raises `BudgetExceeded` — the money is never
-> spent. This is an *enforcing* circuit-breaker, not an after-the-fact cost chart.
+v0.8.0 fixes USD settlement for unpriced models under fallback and ships the CLI demo inside the wheel. Fallback uses a conservative estimate; it does not replace the provider bill.
 
-## Table of contents
+## Why use it
 
-- [Why this exists](#why-this-exists)
-- [Install](#install)
-- [Quickstart (two lines)](#quickstart-two-lines)
-- [Demo](#demo)
-- [How it works](#how-it-works)
-- [Enforcing fuse vs. passive dashboards](#enforcing-fuse-vs-passive-dashboards)
-- [Configuration](#configuration)
-- [Pricing · AgentFuse Cloud](#pricing--agentfuse-cloud)
-- [Roadmap](#roadmap)
-- [License & contributing](#license--contributing)
-- [Share this](#share-this)
+Concurrent calls can each appear affordable while together exceeding the remaining budget. Pending reservations make in-flight estimates visible to the next admission decision.
 
-## Why this exists
+- **Pre-call admission** — An over-budget reservation fails before delegation.
+- **Account for pending work** — Concurrent estimates share the pending balance.
+- **Settle against usage** — Reservations are released or committed explicitly.
 
-In early 2026 a viral HN thread — [“AI agent bankrupted their operator while
-trying to scan DN42”](https://news.ycombinator.com/) (**1284 points / 466
-comments**) — described something that made a lot of operators wince: an
-autonomous Agent stuck in a loop, firing paid call after paid call while scanning
-the DN42 network, and **it bankrupted its operator**.
+## Architecture
 
-The core pain: after you hand an Agent a task, there is **nowhere** to set a hard
-limit of *“this task spends at most \$X, then stop immediately”* before it
-finishes. Provider consoles and cost dashboards only report spend **after the
-money is already gone**. What's missing isn't another chart — it's a guardrail
-that **acts**: one that cuts the self-perpetuating loop *before* the ceiling is
-crossed.
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/architecture-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/architecture-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/architecture-dark.svg">
+  <img src="./assets/presentation/architecture-light.svg" width="960" alt="Architecture diagram">
+</picture>
 
-AgentFuse is that fuse. Wrap any Agent in an executable budget guardrail before
-you deploy it, and the tail risk of *“one task bankrupts one person”* drops from
-a disaster to a single intercepted log line.
+Fuse scopes the active task budget. The wrapper estimates a call, reserves its cost, then invokes LiteLLM only if admitted. Success settles the reservation against reported usage; failures release it. The budget can constrain cumulative spend, token count and per-call cost.
 
-## <img src="https://api.iconify.design/tabler/topology-star-3.svg?color=%23b91c1c" width="20" height="20" align="center" /> Architecture
+| Component | Responsibility |
+| --- | --- |
+| `Fuse task scope` | src/agentfuse/fuse.py |
+| `Pre-call estimate` | src/agentfuse/pricing.py |
+| `Budget reservation` | src/agentfuse/budget.py |
+| `LiteLLM / settlement` | src/agentfuse/wrap.py |
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
-    <img src="./assets/atlas-light.svg" width="880" alt="An agent call enters AgentFuse's own wrapper, which estimates an upper-bound cost, then gates it against the per-task budget — if it would cross the ceiling the fuse trips and the call is never sent; otherwise it delegates to the real litellm and commits the real cost back to the ledger">
-  </picture>
-</p>
+## Install and quickstart
 
-An agent call first enters **AgentFuse's own wrapper** (`wrap.py`, running *before* litellm). `pricing.py` counts prompt tokens with tiktoken and prices them via `litellm.model_cost` to compute an upper-bound estimate, then `budget.gate()` compares *spent + estimate* against this task's USD ceiling. **If it would cross the ceiling, `BudgetExceeded` is raised before the call goes out — 🔌 the fuse trips and the money is never spent**; only within budget does it delegate to the real `litellm.completion`, then commit the confirmed spend from the response's real `Usage` back to the per-task ledger. The whole decision lives inside the `with Fuse(max_spend_usd=…)` budget window.
-
-## Install
+Build with the version declared in the repository manifest. Run the example from the repository root.
 
 ```bash
-pip install agentfuse
+git clone https://github.com/SuperMarioYL/agentfuse-sdk.git
+cd agentfuse-sdk
 ```
 
-One command — no service, no daemon, no database.
-
-## Quickstart (two lines)
-
-Wrap your Agent's main call in `Fuse` and give the task a hard ceiling:
-
-```python
-import agentfuse
-
-agentfuse.install()                       # one-time: take over litellm.completion / acompletion
-
-with agentfuse.Fuse(max_spend_usd=5.00):  # this task spends at most $5
-    run_my_agent()                        # every LLM call inside is gated + metered
-```
-
-When the next call *would* push cumulative spend past \$5, AgentFuse raises
-`BudgetExceeded` **before the call is sent**, and prints:
-
-```
-🔌 FUSE TRIPPED — task halted at $4.98 / $5.00 ceiling (next call est. +$0.04 would cross it; call not sent)
-```
-
-> Prefer a decorator? `@agentfuse.fuse(max_spend_usd=5.0)`. Don't want a
-> monkeypatch? Call the guarded `agentfuse.completion(...)` directly.
-
-## <img src="https://api.iconify.design/tabler/photo.svg?color=%23b91c1c" width="20" height="20" align="center" /> Demo
-
-`agentfuse demo` reproduces the runaway loop from that HN thread and cuts it
-off live — **fully offline** (litellm `mock_response`, no API key needed):
+The budget-only example runs from source with Python 3.11+ and explicit synthetic reservations; full LiteLLM adapter use requires the dependencies in pyproject.toml.
 
 ```bash
-agentfuse demo --ceiling 0.50
+PYTHONPATH=src LITELLM_LOCAL_MODEL_COST_MAP=True python3 examples/presentation-demo.py
 ```
 
-<!-- demo.gif is generated from docs/demo.tape via `vhs docs/demo.tape` (see assets/README.md) -->
-<p align="center">
-  <img src="assets/demo.gif" alt="Terminal recording of AgentFuse tripping before a runaway Agent crosses its ceiling" width="760" />
-</p>
+## Recorded demo
 
-> 📼 The GIF isn't committed — run `vhs docs/demo.tape` to generate it (see
-> [assets/README.md](./assets/README.md)). Here is the real output of that command:
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/process-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/process-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/process-dark.svg">
+  <img src="./assets/presentation/process-light.svg" width="960" alt="Process diagram">
+</picture>
 
-<details>
-<summary>real run output</summary>
+A second reservation is blocked while the first is pending; settlement records 0.40 spent and 0.60 remaining.
 
 ```text
-Runaway-agent demo — per-task ceiling $0.50
-Running offline (litellm mock_response — no API key needed).
-
-  call # 1 ok  | spent $0.0230 / $0.50  | remaining $0.4770
-  call # 2 ok  | spent $0.0460 / $0.50  | remaining $0.4540
-  ...
-  call #19 ok  | spent $0.4370 / $0.50  | remaining $0.0630
-  call #20 ok  | spent $0.4600 / $0.50  | remaining $0.0400
-
-🔌 FUSE TRIPPED — task halted at $0.46 / $0.50 ceiling (next call est. +$0.04 would cross it; call not sent)
-
-The fuse halted the run at $0.4600 of the $0.50 ceiling.
-The next call (est. +$0.0401) was BLOCKED before it was ever sent — that spend was never incurred.
-
-Without AgentFuse, this loop would have kept burning money.
+pending before completion: 0.60
+second reservation: blocked before delegation
+spent: 0.40; pending: 0.00; remaining: 0.60
 ```
 
-</details>
+The complete command and output are recorded in [docs/demo-results.json](./docs/demo-results.json). Inputs and reproduction code are included in the repository.
 
-## How it works
+![Existing terminal recording](./assets/demo.gif)
 
-The whole thing hinges on putting the interception point in the right place. The
-budget gate must run in **AgentFuse's own wrapper code**, *before* the request is
-handed to LiteLLM — **not** in a LiteLLM in-process pre-call callback (that
-callback is wrapped in a `[Non-Blocking]` try/except that *swallows* the
-exception, so the HTTP request goes out anyway — it **can't** abort the call).
-Raising inside our own wrapper is ordinary Python control flow: the over-budget
-call is never reached, so **the money is never spent**.
+The existing recording is retained for context; the text example above documents the reproducible scenario.
 
-```mermaid
-flowchart TD
-    A["Your Agent code<br/>with Fuse(max_spend_usd=5)"] --> W["wrap.py · wraps litellm.completion"]
-    W --> E["pricing.py · estimate upper-bound cost<br/>tiktoken counts prompt tokens + litellm.model_cost rate"]
-    E --> G{"budget.gate()<br/>spent + estimate > ceiling ?"}
-    G -->|"yes → over budget"| T["raise BudgetExceeded<br/>print 🔌 FUSE TRIPPED<br/>(call never sent → money never spent)"]
-    G -->|"no → allow"| D["delegate → real litellm.completion"]
-    D --> C["post-call commit<br/>write confirmed spend from real Usage"]
-    C --> A
+## Usage
+
+The CLI exposes the following operations. Commands after the example use your own paths or identifiers.
+
+```bash
+# Full adapter installation:
+python -m pip install -e .
+# Offline core example:
+PYTHONPATH=src python3 examples/presentation-demo.py
 ```
-
-The four-step loop (per call):
-
-1. **Estimate** an upper bound on the call's cost from `max_tokens` + input tokens
-   (conservative — better to trip a little early than overshoot).
-2. **Gate** the estimate against the task's remaining budget — `raise` *before*
-   delegating to litellm if it would cross the ceiling.
-3. **Send**: delegate to the real `litellm.completion` only when within budget.
-4. **Commit**: after the call returns, write confirmed spend back from the
-   response's **real** `Usage`.
-
-LiteLLM still normalizes the actual call, the price table, and the usage fields
-across providers — so it's **zero-touch**; the fuse logic lives in your process,
-before the call goes out — so it actually **stops** the spend.
-
-## Enforcing fuse vs. passive dashboards
-
-| Capability | AgentFuse | Provider console | Cost dashboards (Helicone / Langfuse-style) |
-| --- | :---: | :---: | :---: |
-| Per-task hard ceiling | ✓ | — | — |
-| Acts **before** the spend happens | ✓ | — | — |
-| Cuts the Agent loop mid-run | ✓ | — | — |
-| Cross-provider spend visualization | partial | ✓ | ✓ |
-| Historical reports / multi-axis breakdown | — | ✓ | ✓ |
-
-Honestly: cost dashboards are far better at **aggregating, visualizing, and
-slicing** spend — but their contract is *“read-only, never touch the runtime.”*
-AgentFuse's verb is different: **it acts**, cutting the loop before the money is
-gone.
 
 ## Configuration
 
-| Option | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `max_spend_usd` | `float` | required | Hard USD ceiling for this task (arg to `Fuse` / `@fuse`). |
-| `max_total_tokens` | `int` | `None` | Optional **whole-task cumulative token** ceiling — trips against the USD ceiling, whichever blows first. Note this is the *whole-task* ceiling, not a single call's completion-length `max_tokens`. (The old `Fuse(max_tokens=...)` is kept as a **deprecated alias** for one release and emits a `DeprecationWarning`; `@fuse` / `task` have always used the clearer `ceiling_tokens`.) |
-| `single_call_ceiling` | `float` | `None` | Optional **per-call** USD hard cap, so one oversized prompt can't blow the whole budget in a single shot. |
-| `on_unpriced` | `str` | `"block"` | Policy when a model is missing from `litellm.model_cost`: `"block"` (fail closed → `UnpricedModelError`), `"fallback"` (conservative per-token estimate), or `"warn-pass"` (send ungated). |
-| `on_trip` | `Callable[[BudgetExceeded], None] \| None` | `None` | Optional trip callback (v0.4): invoked fail-soft with the structured `BudgetExceeded` right before the over-budget call is blocked (any exception the callback raises is swallowed and never changes whether the call is blocked). Use it to push the trip event into your own webhook / audit / metric — a minimal in-process precursor to the §1 `report_to="cloud"` cloud hook. |
-| `name` | `str` | `"task"` | Task label shown in the ledger and the trip banner. |
-| `--ceiling` (CLI demo) | `float` | `0.50` | Per-task ceiling for `agentfuse demo`. |
+Use agentfuse.install() to wrap LiteLLM’s completion functions, then run calls inside Fuse(max_spend_usd=...). Direct agentfuse.completion is another entrypoint. Set completion limits and choose on_unpriced deliberately; block is the default, while warn-pass bypasses meaningful price enforcement for unknown models.
 
-> **Unpriced models fail closed by default (v0.2).** A model absent from the
-> price table can't be priced, so AgentFuse can't enforce a ceiling on it — it
-> now raises `UnpricedModelError` instead of silently passing the call. Use
-> `on_unpriced="fallback"` or `"warn-pass"` to opt out per task.
+## Integrations and responsibilities
 
-> **Opt-in spend record (v0.2).** The live ledger still lives only inside a
-> running `with Fuse(...)` scope. For cross-process history, opt into the
-> append-only JSONL record via
-> `agentfuse.record_task(budget, tripped=..., log_path=...)` after a task and
-> read it back with `agentfuse status --log <path>`. This is
-> execution-adjacent record-keeping — no dashboard, no monitoring service, and
-> no cross-run budget rollover.
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/integrations-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/integrations-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/integrations-dark.svg">
+  <img src="./assets/presentation/integrations-light.svg" width="960" alt="Integrations diagram">
+</picture>
 
-## Pricing · AgentFuse Cloud
+The following routes are implemented in the source. Choose the input that matches your task and keep the resulting artifact with your project.
 
-**The open-source SDK (this repo) is free forever** — a single-machine
-circuit-breaker that builds install base and trust. Revenue comes from a hosted
-control plane, **not** from locking the SDK.
+| Route | Implemented role |
+| --- | --- |
+| LiteLLM completion | Wrapped sync and async calls |
+| Fuse / decorator | Task-local budget context |
+| Streaming usage | Consumption-aware metering |
+| Local records | Optional task ledger |
 
-Once several teammates each run Agents, the pain shifts from *“I'm afraid of
-bankrupting myself”* to *“I can't govern the whole team's budget — I don't know
-whose task is burning money.”* That's where the paid **AgentFuse Cloud** hosted
-control plane comes in:
+## Limits and next steps
 
-| Plan | Price | Includes |
-| --- | --- | --- |
-| **Team** | **\$29 / mo** | 3 seats; set/change per-project budget ceilings from the web (no code redeploy). |
-| ＋ each extra seat | **+\$8 / mo** | Per-seat metering. |
-| **Pro** | **\$99 / mo** | 10 seats ＋ cross-member/project quota alerts (Slack / Feishu webhook) ＋ 90-day audit retention and tripped-task replay. |
+- Only calls using the wrapper and active budget are governed. Direct SDK calls, external processes and unrelated services remain outside that budget.
+- Admission depends on token and price estimates. Incorrect provider pricing or unexpectedly larger usage can make the final bill differ from the estimate.
+- The demo exercises reservations with synthetic amounts. It does not call LiteLLM or measure real provider spend.
 
-Minimum path-to-card: an SDK user adds one line `Fuse(..., report_to="cloud")` →
-their task stream shows up on the web → when they want a single team-wide ceiling
-they click Upgrade → three-step Stripe Checkout → the control plane is live.
+Provider-specific metering and workload estimates need ongoing validation. The pure Budget API is useful independently when a caller owns its cost calculation.
 
-> The v0.1 SDK ships only a `--report-endpoint` / `report_to=` upload-hook
-> **stub**; the server-side control plane is out of scope for v0.1. The anchor is
-> simple — one runaway loop can burn tens to hundreds of dollars, so the ROI of
-> team-level control is self-evident.
+## License and contributions
 
-## Roadmap
-
-- [x] **m1 · Meter**: per-call token+USD estimator + a running per-task ledger.
-- [x] **m2 · Fuse**: pre-call halt that raises `BudgetExceeded` *before* spend
-      crosses the ceiling (USD / token dual ceilings, whichever trips first).
-- [x] **m3 · Wrap + demo**: zero-touch `Fuse` / `@fuse` wrapping of litellm +
-      the `agentfuse` CLI + a runaway-agent demo that trips the fuse.
-- [x] **v0.2 · Hardening**: fail-closed on unpriced models (`on_unpriced`),
-      a token ceiling (`max_total_tokens`) and a per-call hard cap
-      (`single_call_ceiling`), plus an opt-in JSONL spend record feeding
-      `agentfuse status --log`.
-- [x] **v0.3 · Stream metering + naming fix**: `stream=True` calls are now
-      metered on stream exhaustion (real usage when the provider emits it, else
-      the pre-call upper-bound estimate), so the cumulative fuse no longer
-      silently fails on streamed calls — the dominant agent call mode. Also
-      renamed `Fuse`'s cumulative-token keyword from the confusing `max_tokens`
-      to `max_total_tokens` (old name kept as a deprecated alias).
-- [x] **v0.4 · Metadata/doc fix + on_trip hook**: corrected the pyproject +
-      both READMEs' repo links that pointed at the non-existent
-      `supermario_leo/agentfuse` (now the real `SuperMarioYL/agentfuse-sdk`),
-      added the missing `[0.3.0]` CHANGELOG link reference and re-based the
-      `[Unreleased]` compare at `v0.3.0`; added an optional `on_trip` callback
-      (`Budget` / `Fuse` / `task` / `@fuse` all accept it) invoked fail-soft with
-      the `BudgetExceeded` right before the over-budget call is blocked, so an
-      operator can wire the trip event into their own webhook / audit / metric
-      in-process — a minimal in-process precursor to the §1 `report_to=` cloud hook.
-- [x] **v0.5 · Async + concurrency + streaming upper bound**: `@fuse`/`@fused`
-      no longer silently bypass the fuse for `async def` (the wrapper now `await`s
-      the body inside the budget scope); the pre-call gate is atomic across the
-      awaited LLM call (`Budget.reserve` + `Reservation`) so concurrent fan-out
-      cannot overshoot the ceiling; and `DEFAULT_MAX_COMPLETION_TOKENS` rose to
-      8192 (model-aware `max_output_tokens` preferred when larger) so the
-      no-`max_tokens` estimate is a true upper bound for streamed completions.
-- [x] **v0.6 · Streaming detector + meter fix**: `is_stream_response` no longer
-      misclassifies a usage-less litellm `ModelResponse` as a stream (which leaked
-      a `Reservation` into `pending` forever), and the streaming meter threads the
-      pre-call token estimate so `ceiling_tokens` trips on streamed no-usage calls.
-- [x] **v0.7 · Version + release-notes fix**: bumped the stale package version
-      (v0.6.0 shipped at `0.5.0`) and pinned it with a regression test; backfilled
-      the missing `[0.6.0]` CHANGELOG section, re-based `[Unreleased]`, and synced
-      this roadmap.
-- [x] **v0.8 · Unpriced-model USD fuse fix + demo fix**: under `on_unpriced='fallback'`,
-      the post-call commit for an unpriced model (ollama / watsonx) no longer
-      freezes the cumulative USD ledger at $0 (because `actual_cost` returns $0);
-      the new `resolve_commit_cost` falls back to the conservative pre-call
-      estimate when the real cost is unresolvable, so the USD ceiling trips on
-      self-hosted models — the same root class as the v0.6.0 streaming no-usage
-      fallback. Also vendored `agentfuse demo` into the package
-      (`agentfuse._runaway_demo`) so the README `pip install agentfuse` →
-      `agentfuse demo` quickstart works from a wheel install (previously raised
-      "Bundled demo not found" because `examples/` is not shipped in the wheel).
-- [ ] **AgentFuse Cloud**: team-level central budget policy, audit log, ceiling
-      alerts (paid hosted control plane).
-- [ ] Cross-run budget rollover (the v0.2 record is read-only history; rollover
-      stays deferred).
-- [ ] Non-LLM cloud-resource (compute/storage/bandwidth) metering.
-- [ ] First-class integration slots in the LiteLLM / hermes-agent / OpenViking
-      ecosystems.
-
-## License & contributing
-
-[Apache-2.0](./LICENSE). Issues and PRs welcome — especially real *“my Agent
-burned me too”* scenarios that help us tune the fuse.
-
-After pushing to GitHub, set discovery topics on the repo:
-
-```bash
-gh repo edit --add-topic agent --add-topic llm --add-topic litellm --add-topic cost-control
-```
-
-## Share this
-
-```text
-Your AI Agent is running unattended — who's the fuse?
-AgentFuse puts a hard per-task ceiling on it and 🔌 trips before the next LLM
-call can bankrupt you — the money is never spent. Two lines, zero-touch on
-LiteLLM. https://github.com/SuperMarioYL/agentfuse-sdk
-```
-
----
-
-<sub>Apache-2.0 © 2026 <a href="https://github.com/SuperMarioYL">SuperMarioYL</a></sub>
+See [LICENSE](./LICENSE). When reporting an issue, include a minimal input, the command, and the observed output.

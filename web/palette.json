@@ -1,0 +1,38 @@
+{
+  "mode": "auto",
+  "id": "e656bd-e76a81-f0acf6-153377905179",
+  "identity": "https://github.com/supermarioyl/agentfuse-sdk",
+  "primary": "#e656bd",
+  "secondary": "#e76a81",
+  "highlight": "#f0acf6",
+  "dark": {
+    "bg": "#0a0710",
+    "panel": "#13101c",
+    "code": "#140d1a",
+    "ink": "#fceefd",
+    "muted": "#b29cbc",
+    "line": "#3a1836",
+    "primary": "#e656bd",
+    "secondary": "#e76a81",
+    "highlight": "#f0acf6",
+    "accent": "#e656bd",
+    "buttonStart": "#c0489e",
+    "buttonEnd": "#bb5669",
+    "buttonText": "#ffffff"
+  },
+  "light": {
+    "bg": "#fef9fd",
+    "panel": "#fef7fc",
+    "code": "#fdf3fa",
+    "ink": "#27162a",
+    "muted": "#725e7f",
+    "line": "#f7cbeb",
+    "primary": "#b74497",
+    "secondary": "#b25264",
+    "highlight": "#8b638e",
+    "accent": "#b74497",
+    "buttonStart": "#c0489e",
+    "buttonEnd": "#bb5669",
+    "buttonText": "#ffffff"
+  }
+}

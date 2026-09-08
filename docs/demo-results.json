@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "source_revision": "6cd070a7a8a6ba924462b1fc05ad731ddf7b5271",
+  "scope": "Pure budget reservation and settlement using explicit synthetic USD/token values. No LiteLLM invocation, provider pricing or real spend.",
+  "steps": [
+    {
+      "label": "Recorded run",
+      "body": "Pure budget reservation and settlement using explicit synthetic USD/token values. No LiteLLM invocation, provider pricing or real spend.",
+      "command": "PYTHONPATH=src LITELLM_LOCAL_MODEL_COST_MAP=True python3 examples/presentation-demo.py",
+      "output": "pending before completion: 0.60\nsecond reservation: blocked before delegation\nspent: 0.40; pending: 0.00; remaining: 0.60"
+    }
+  ]
+}

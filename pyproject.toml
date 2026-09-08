@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agentfuse"
 version = "0.8.0"
-description = "An enforcing per-task spend circuit-breaker for autonomous agents — halts an Agent before it burns your budget. 给自主 Agent 装的花费保险丝。"
+description = "Reserve estimated per-task spend before wrapped LiteLLM calls, settle usage afterward, and block requests that exceed configured ceilings."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }

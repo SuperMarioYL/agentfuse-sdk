@@ -1,89 +1,216 @@
 {
-  "schema": 1,
+  "schema": 3,
   "name": "agentfuse-sdk",
   "github": "https://github.com/SuperMarioYL/agentfuse-sdk",
   "host": "agentfuse-sdk.lei6393.com",
-  "lang": { "primary": "zh", "toggle": true },
-  "accent": ["#dc2626"],
-  "content_version": "v0.8.0",
+  "palette": "auto",
+  "lang": {
+    "primary": "en",
+    "toggle": true
+  },
+  "meta": {
+    "visual_style": "neon-particle",
+    "demo_source": "docs/demo-results.json"
+  },
   "hero": {
-    "eyebrow": { "zh": "本地 · 无账号 · 两行接入", "en": "Local · No account · Two-line setup" },
     "headline": {
-      "zh": "Agent 跑穷你之前\n先跳闸",
-      "en": "Trips before your Agent\nburns your budget"
+      "en": "Check the next call against the task budget.",
+      "zh": "用任务预算检查下一次调用。"
     },
     "sub": {
-      "zh": "给单次任务设一个硬上限——下一次调用要把花费推过天花板时，在它发出之前就把循环掐断，钱根本没花出去。同步、异步、并发扇出、流式调用，天花板都成立。这是执行式熔断，不是事后画一张成本图。",
-      "en": "Set a hard ceiling on one task. When the next call would push spend past it, the loop is cut before the call ever goes out — the money is never spent. Sync, async, parallel fan-out, streaming — the ceiling holds in every shape your Agent runs. An enforcing fuse, not an after-the-fact cost chart."
+      "en": "AgentFuse SDK places a per-task budget around wrapped LiteLLM calls, reserving estimated cost before delegation and settling it after usage is reported.",
+      "zh": "AgentFuse SDK 为经过包装的 LiteLLM 调用提供任务预算，在委托前预留估计成本，返回用量后结算。"
     },
-    "command": "agentfuse demo",
-    "cta": { "zh": "开始使用", "en": "Get started" },
-    "ctaGithub": { "zh": "在 GitHub 查看", "en": "View on GitHub" }
+    "href": "#quickstart"
   },
   "advantages": [
     {
-      "title": { "zh": "钱花出去之前就拦下", "en": "Blocks the call before the money is spent" },
-      "body": {
-        "zh": "保险丝在调用发出之前估出这次的花费上界，一旦会把累计推过天花板就直接掐断——那次超预算的调用根本没发出去，钱也没花出去。就算 Agent 并发扇出多个调用，每次都先扣占位再发，谁也不会趁对方在途时溜过天花板。不是事后报账。",
-        "en": "Before a call goes out, the fuse estimates its upper-bound cost; the moment that would push the cumulative total past the ceiling, it cuts in — the over-budget call is never sent and the money is never spent. Even when your Agent fans out parallel calls, each reserves its slice up front so none slips through while another is in flight. Not an after-the-fact report."
+      "title": {
+        "en": "Pre-call admission",
+        "zh": "调用前准入"
       },
-      "chips": [
-        "› 调用从不发出",
-        "› 并发也拦得住"
-      ]
+      "body": {
+        "en": "An over-budget reservation fails before delegation.",
+        "zh": "超预算预留在委托前失败。"
+      }
     },
     {
-      "title": { "zh": "两行接入，现有代码不用改", "en": "Two lines, your existing code untouched" },
-      "body": {
-        "zh": "把 Agent 的主调用包进一个作用域，或装一次接管 LLM 入口——你已经在用的调用方式会被自动拦截计量，不用为每个 provider 改一遍代码。同步函数和异步函数都一样：装饰器认得 async，预算作用域会一直撑到协程真正跑完，不会再被静默绕过。",
-        "en": "Wrap your Agent's main call in one scope, or install once to take over the LLM entry point — the calls you already make get gated and metered automatically, no per-provider code rewrite. Sync and async functions alike: the decorator recognizes async, and the budget scope stays bound until the coroutine actually finishes — never silently bypassed again."
+      "title": {
+        "en": "Account for pending work",
+        "zh": "计入待结算工作"
       },
-      "chips": [
-        "› 作用域即预算窗口",
-        "› async 也照常拦"
-      ]
+      "body": {
+        "en": "Concurrent estimates share the pending balance.",
+        "zh": "并发估计共用待结算余额。"
+      }
     },
     {
-      "title": { "zh": "流式调用也照算进账", "en": "Streaming calls count too" },
-      "body": {
-        "zh": "Agent 最常用的流式调用，过去会因为读不到用量而记成零花费、保险丝永远不跳。现在流一耗尽就按真实用量记账，拿不到用量就按调用前的保守上界记——而且这个上界会按模型实际能吐的长度收紧，不再是写死的小数字。累计熔断对流式照样生效。",
-        "en": "The streaming calls agents actually use used to read as zero spend because usage arrived too late, so the fuse never tripped. Now each stream is metered on exhaustion — real usage when the provider emits it, else a conservative pre-call upper bound that tightens to what the model can actually output, not a fixed small number. The cumulative fuse holds on streamed runs too."
+      "title": {
+        "en": "Settle against usage",
+        "zh": "按用量结算"
       },
-      "chips": [
-        "› 流耗尽即记账",
-        "› 上界按模型收紧"
-      ]
+      "body": {
+        "en": "Reservations are released or committed explicitly.",
+        "zh": "预留显式释放或提交。"
+      }
+    }
+  ],
+  "demo": {
+    "title": {
+      "en": "Run it on a complete example",
+      "zh": "运行完整示例"
+    },
+    "note": {
+      "en": "The budget-only example runs from source with Python 3.11+ and explicit synthetic reservations; full LiteLLM adapter use requires the dependencies in pyproject.toml.",
+      "zh": "纯预算示例可用 Python 3.11+ 从源码运行，使用明确合成预留；完整 LiteLLM 适配需要 pyproject.toml 中的依赖。"
+    },
+    "source": "https://github.com/SuperMarioYL/agentfuse-sdk/blob/main/docs/demo-results.json",
+    "steps": [
+      {
+        "label": "Recorded run",
+        "body": "Pure budget reservation and settlement using explicit synthetic USD/token values. No LiteLLM invocation, provider pricing or real spend.",
+        "command": "PYTHONPATH=src LITELLM_LOCAL_MODEL_COST_MAP=True python3 examples/presentation-demo.py",
+        "output": "pending before completion: 0.60\nsecond reservation: blocked before delegation\nspent: 0.40; pending: 0.00; remaining: 0.60",
+        "image": "/assets/presentation/demo-0-light.svg",
+        "imageDark": "/assets/presentation/demo-0-dark.svg"
+      }
+    ]
+  },
+  "quickstart": {
+    "title": {
+      "en": "Try it locally",
+      "zh": "本地上手"
+    },
+    "body": {
+      "en": "The budget-only example runs from source with Python 3.11+ and explicit synthetic reservations; full LiteLLM adapter use requires the dependencies in pyproject.toml.",
+      "zh": "纯预算示例可用 Python 3.11+ 从源码运行，使用明确合成预留；完整 LiteLLM 适配需要 pyproject.toml 中的依赖。"
+    },
+    "steps": [
+      {
+        "title": {
+          "en": "Install from source",
+          "zh": "从源码安装"
+        },
+        "code": "git clone https://github.com/SuperMarioYL/agentfuse-sdk.git\ncd agentfuse-sdk"
+      },
+      {
+        "title": {
+          "en": "Run the included example",
+          "zh": "运行随仓示例"
+        },
+        "code": "PYTHONPATH=src LITELLM_LOCAL_MODEL_COST_MAP=True python3 examples/presentation-demo.py"
+      }
+    ]
+  },
+  "limitations": [
+    {
+      "en": "Only calls using the wrapper and active budget are governed. Direct SDK calls, external processes and unrelated services remain outside that budget.",
+      "zh": "只有经过包装器且处于活跃预算内的调用受管理；直接 SDK、外部进程和无关服务不在预算范围。"
     },
     {
-      "title": { "zh": "跳闸时通知你", "en": "Pings you when it trips" },
-      "body": {
-        "zh": "保险丝跳闸时，会带着这次的花费、上限和触顶原因回调你注册的钩子——接进你的告警、审计或计数，不用在每个任务外面再包一层 try/except。回调出错也不会影响是否拦下调用。",
-        "en": "When the fuse trips, it calls the hook you registered with the spend, ceiling, and which limit blew — wire it into your own alerting, audit log, or counter, without wrapping every task in its own try/except. A callback that errors never changes whether the call is blocked."
-      },
-      "chips": [
-        "› 跳闸即回调你",
-        "› fail-soft 不误拦"
-      ]
+      "en": "Admission depends on token and price estimates. Incorrect provider pricing or unexpectedly larger usage can make the final bill differ from the estimate.",
+      "zh": "准入依赖 token 与价格估计；提供方价格不准确或实际用量超预期时，最终账单可能偏离估计。"
+    },
+    {
+      "en": "The demo exercises reservations with synthetic amounts. It does not call LiteLLM or measure real provider spend.",
+      "zh": "示例使用合成金额验证预留机制，不调用 LiteLLM，也不测量提供方实际消费。"
     }
   ],
   "scene": {
-    "kind": "particle-field"
+    "kind": "neon-graph",
+    "fallback": "/assets/presentation/scene-dark.svg",
+    "fallbackLight": "/assets/presentation/scene-light.svg"
   },
-  "cta": {
-    "headline": {
-      "zh": "Agent 跑穷操作者的事，别再重演",
-      "en": "Don't let an Agent bankrupt its operator again"
+  "story": {
+    "intro": {
+      "title": {
+        "en": "A concrete task",
+        "zh": "从实际任务出发"
+      },
+      "body": {
+        "en": "Concurrent calls can each appear affordable while together exceeding the remaining budget. Pending reservations make in-flight estimates visible to the next admission decision.",
+        "zh": "并发调用各自可能看似可负担，合计却超过剩余预算。待结算预留让下一次准入决策看到在途估计。"
+      }
     },
-    "sub": {
-      "zh": "一条 pip install，给你的下一个 Agent 装上保险丝。开源、Apache-2.0、永久免费。",
-      "en": "One pip install puts a fuse on your next Agent. Open source, Apache-2.0, free forever."
-    },
-    "button": { "zh": "在 GitHub 上开始", "en": "Get started on GitHub" }
+    "sections": [
+      {
+        "title": {
+          "en": "Follow the operation",
+          "zh": "处理过程"
+        },
+        "body": {
+          "en": "Fuse scopes the active task budget. The wrapper estimates a call, reserves its cost, then invokes LiteLLM only if admitted. Success settles the reservation against reported usage; failures release it. The budget can constrain cumulative spend, token count and per-call cost.",
+          "zh": "Fuse 确定活跃任务预算。包装器估计调用并预留成本，准入后才调用 LiteLLM。成功时按报告用量结算，失败时释放预留。预算可约束累计费用、token 与单次费用。"
+        },
+        "image": {
+          "light": "/assets/presentation/process-light.svg",
+          "dark": "/assets/presentation/process-dark.svg",
+          "alt": {
+            "en": "Follow the operation",
+            "zh": "处理过程"
+          }
+        }
+      },
+      {
+        "title": {
+          "en": "How AgentFuse SDK works",
+          "zh": "AgentFuse SDK 的工作方式"
+        },
+        "body": {
+          "en": "Fuse scopes the active task budget. The wrapper estimates a call, reserves its cost, then invokes LiteLLM only if admitted. Success settles the reservation against reported usage; failures release it. The budget can constrain cumulative spend, token count and per-call cost.",
+          "zh": "Fuse 确定活跃任务预算。包装器估计调用并预留成本，准入后才调用 LiteLLM。成功时按报告用量结算，失败时释放预留。预算可约束累计费用、token 与单次费用。"
+        },
+        "image": {
+          "light": "/assets/presentation/architecture-light.svg",
+          "dark": "/assets/presentation/architecture-dark.svg",
+          "alt": {
+            "en": "How AgentFuse SDK works",
+            "zh": "AgentFuse SDK 的工作方式"
+          }
+        }
+      },
+      {
+        "title": {
+          "en": "Connect the pieces",
+          "zh": "输入与输出"
+        },
+        "body": {
+          "en": "The following routes are implemented in the source. Choose the input that matches your task and keep the resulting artifact with your project.",
+          "zh": "以下路径已有源码实现。按任务选择输入，并把生成的结果与项目一起保存。"
+        },
+        "image": {
+          "light": "/assets/presentation/integrations-light.svg",
+          "dark": "/assets/presentation/integrations-dark.svg",
+          "alt": {
+            "en": "Connect the pieces",
+            "zh": "输入与输出"
+          }
+        }
+      }
+    ],
+    "details": [
+      {
+        "title": {
+          "en": "Configuration",
+          "zh": "配置"
+        },
+        "body": {
+          "en": "Use agentfuse.install() to wrap LiteLLM’s completion functions, then run calls inside Fuse(max_spend_usd=...). Direct agentfuse.completion is another entrypoint. Set completion limits and choose on_unpriced deliberately; block is the default, while warn-pass bypasses meaningful price enforcement for unknown models.",
+          "zh": "使用 agentfuse.install() 包装 LiteLLM completion 函数，再在 Fuse(max_spend_usd=...) 中运行；也可直接调用 agentfuse.completion。应设置生成上限并明确选择 on_unpriced；默认 block，而 warn-pass 会让未知模型绕过有效费用约束。"
+        }
+      },
+      {
+        "title": {
+          "en": "Further use",
+          "zh": "进一步使用"
+        },
+        "body": {
+          "en": "The CLI exposes the following operations. Commands after the example use your own paths or identifiers.",
+          "zh": "CLI 提供以下操作。示例之外的命令需要替换成你的文件路径或标识。"
+        },
+        "code": "# Full adapter installation:\npython -m pip install -e .\n# Offline core example:\nPYTHONPATH=src python3 examples/presentation-demo.py"
+      }
+    ]
   },
-  "footer": {
-    "tag": {
-      "zh": "给自主 Agent 装的执行式花费保险丝",
-      "en": "The enforcing spend fuse for autonomous Agents"
-    }
-  }
+  "content_version": "v0.8.0"
 }

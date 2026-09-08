@@ -1,0 +1,78 @@
+{
+  "name": "agentfuse-sdk",
+  "tagline": "Check the next call against the task budget.",
+  "architecture": {
+    "title": "How AgentFuse SDK works",
+    "nodes": [
+      {
+        "title": "Fuse task scope",
+        "detail": "src/agentfuse/fuse.py"
+      },
+      {
+        "title": "Pre-call estimate",
+        "detail": "src/agentfuse/pricing.py"
+      },
+      {
+        "title": "Budget reservation",
+        "detail": "src/agentfuse/budget.py"
+      },
+      {
+        "title": "LiteLLM / settlement",
+        "detail": "src/agentfuse/wrap.py"
+      }
+    ],
+    "edges": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        3
+      ]
+    ]
+  },
+  "process": {
+    "title": "From input to a useful result",
+    "steps": [
+      {
+        "title": "Reserve estimate",
+        "detail": "0.60 pending under 1.00 ceiling"
+      },
+      {
+        "title": "Gate next call",
+        "detail": "Additional 0.50 is blocked"
+      },
+      {
+        "title": "Settle usage",
+        "detail": "0.40 spent, pending cleared"
+      }
+    ],
+    "result": "A second reservation is blocked while the first is pending; settlement records 0.40 spent and 0.60 remaining."
+  },
+  "integrations": {
+    "title": "Supported input and output routes",
+    "items": [
+      {
+        "title": "LiteLLM completion",
+        "detail": "Wrapped sync and async calls"
+      },
+      {
+        "title": "Fuse / decorator",
+        "detail": "Task-local budget context"
+      },
+      {
+        "title": "Streaming usage",
+        "detail": "Consumption-aware metering"
+      },
+      {
+        "title": "Local records",
+        "detail": "Optional task ledger"
+      }
+    ]
+  }
+}
