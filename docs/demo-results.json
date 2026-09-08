@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "6cd070a7a8a6ba924462b1fc05ad731ddf7b5271",
+  "source_revision": "302bc54915799f8cc70f267aa16070a2dc0cddff",
   "scope": "Pure budget reservation and settlement using explicit synthetic USD/token values. No LiteLLM invocation, provider pricing or real spend.",
   "steps": [
     {
