@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-24
+
+Three reproduced correctness fixes that finish the job v0.8.0 started: every
+remaining path that let real spend stay invisible to the cumulative ledger is
+now closed. All stay *executive* guardrails — no dashboard, no monitoring
+service. Pinned by `tests/test_v090_fixes.py`.
+
+### Fixed
+
+- **A finished response that carries NO usage block no longer commits $0.00**
+  (`agentfuse.pricing.resolve_commit_cost`, wired through
+  `agentfuse.fuse.commit_actual`). The v0.8.0 fix covered responses whose
+  `Usage` reports real tokens; the last member of the family slipped through: a
+  non-stream response with no `.usage` attribute at all made `actual_tokens`
+  return 0, so the fallback guard (`tokens > 0`) never fired and the pre-call
+  estimate was discarded — the USD fuse never tripped. 50 no-usage calls under
+  `on_unpriced='fallback'` pinned `spent_usd` at $0.000000 with 0 trips, for
+  unpriced models AND for priced `gpt-4o` (any provider that omits usage).
+  Such a response now commits the conservative pre-call estimate for both the
+  USD and token ledgers (mirroring the streaming no-usage fallback); a usage
+  block that is present but reports zero tokens still commits an honest 0.0.
+- **A metered stream the caller never consumes now settles the ledger**
+  (`agentfuse.stream`). `meter_sync_stream` / `meter_async_stream` were lazy
+  generators whose commit + reservation release lived in a `try/finally` — but
+  a generator that is never started runs no body code on close/deallocation, so
+  a zero-consumption stream never settled: the pre-call `Reservation` stayed
+  pinned in `pending` for the life of the Budget and the abandoned call (whose
+  delegate ran and was billed) committed nothing. The metering wrappers are now
+  settle-explicit objects with identical iteration semantics: settlement runs
+  exactly once on exhaustion, on a provider error, on explicit
+  `close()` / `aclose()`, and in `__del__` — i.e. as soon as the caller drops
+  the stream, GC or not.
+- **The pre-call estimate now includes litellm's `n` (choices) parameter**
+  (`agentfuse.wrap`, `agentfuse.fuse`, `agentfuse.pricing.estimate_call`).
+  `max_tokens` applies per choice, so an `n=4` call bills up to `4 x
+  max_tokens` completion tokens while the gate priced one completion: a
+  `$0.02`-ceiling task with `max_tokens=1000, n=4` overshot to $0.040025
+  post-commit with no retroactive trip. `n` is threaded from the call kwargs
+  into the estimate and multiplies the completion half of both bounds; the
+  n=1 / omitted-n estimate is bit-identical to v0.8.0.
+
 ## [0.8.0] - 2026-09-08
 
 Two fixes that close a silent USD-fuse bypass on the exact audience the
@@ -324,7 +365,8 @@ the money is never spent.
   `spent` / `ceiling` / `would_spend` fields.
 - 30 tests (`test_budget` ×16, `test_fuse` ×14); CI on Python 3.11 / 3.12.
 
-[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/SuperMarioYL/agentfuse-sdk/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.9.0
 [0.8.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.8.0
 [0.7.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.7.0
 [0.6.0]: https://github.com/SuperMarioYL/agentfuse-sdk/releases/tag/v0.6.0

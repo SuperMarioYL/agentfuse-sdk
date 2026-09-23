@@ -8,11 +8,11 @@ every prior release bumped ``__version__``; the v0.6.0 tag did not). v0.7.0 bump
 both to ``0.7.0`` and added this guard; it is updated per release so the version
 stays honest and the two sources can never drift apart again.
 
-* ``test_version_is_0_8_0`` is the red->green pin: it FAILS on a stale source
+* ``test_version_is_0_9_0`` is the red->green pin: it FAILS on a stale source
   and is updated per release.
 * ``test_version_matches_pyproject`` is the durable anti-drift guard: the package
   version must always equal the version declared in ``pyproject.toml``.
-* ``test_cli_version_reports_0_8_0`` pins the user-facing ``agentfuse --version``.
+* ``test_cli_version_reports_0_9_0`` pins the user-facing ``agentfuse --version``.
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 # The shipped release this source is tagged as. Bump together with
 # src/agentfuse/__init__.py and pyproject.toml on every release (the v0.6.0
 # release forgot this bump — this pin makes a forgotten bump fail CI).
-SHIPPED_VERSION = "0.8.0"
+SHIPPED_VERSION = "0.9.0"
 
 
-def test_version_is_0_8_0():
+def test_version_is_0_9_0():
     """Pin ``agentfuse.__version__`` to the shipped release (red on a stale source)."""
     assert agentfuse.__version__ == SHIPPED_VERSION, (
         f"agentfuse.__version__ is {agentfuse.__version__!r}, expected "
@@ -62,7 +62,7 @@ def test_version_matches_pyproject():
     )
 
 
-def test_cli_version_reports_0_8_0():
+def test_cli_version_reports_0_9_0():
     """``agentfuse --version`` must report the shipped release (cli.py wires it
     to ``__version__`` via ``click.version_option``)."""
     result = CliRunner().invoke(main, ["--version"])

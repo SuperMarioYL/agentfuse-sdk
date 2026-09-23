@@ -10,9 +10,9 @@ link reference. This is the exact drift the v0.4.0
 corrected, recurring for v0.6.0; v0.7.0 backfilled [0.6.0] and added [0.7.0].
 
 These tests pin the discipline (updated per release):
-* a ``## [0.6.0]`` / ``## [0.7.0]`` / ``## [0.8.0]`` section exists,
-* the ``[Unreleased]`` compare is based at the latest release (``v0.8.0``),
-* ``[0.6.0]`` / ``[0.7.0]`` / ``[0.8.0]`` link references exist.
+* a ``## [0.6.0]`` / ``## [0.7.0]`` / ``## [0.8.0]`` / ``## [0.9.0]`` section exists,
+* the ``[Unreleased]`` compare is based at the latest release (``v0.9.0``),
+* ``[0.6.0]`` / ``[0.7.0]`` / ``[0.8.0]`` / ``[0.9.0]`` link references exist.
 """
 
 from __future__ import annotations
@@ -55,16 +55,25 @@ def test_changelog_documents_v080_release():
     )
 
 
+def test_changelog_documents_v090_release():
+    """This release (v0.9.0) must be documented in the CHANGELOG."""
+    text = _text()
+    assert re.search(r"^##\s+\[0\.9\.0\]\s", text, re.MULTILINE), (
+        "CHANGELOG.md must have a ## [0.9.0] section documenting this release "
+        "(the no-usage-response, unconsumed-stream and n-choices fixes)."
+    )
+
+
 def test_unreleased_compare_based_at_latest_release():
     """The [Unreleased] compare link must be based at the latest released tag
-    (v0.8.0), not at a stale earlier tag — otherwise the latest release's own
+    (v0.9.0), not at a stale earlier tag — otherwise the latest release's own
     commits render under "Unreleased" on GitHub."""
     text = _text()
     match = re.search(r"^\[Unreleased\]:\s*(\S+)", text, re.MULTILINE)
     assert match, "CHANGELOG.md must define an [Unreleased] link reference"
     url = match.group(1)
-    assert "v0.8.0...HEAD" in url, (
-        f"[Unreleased] compare must be based at v0.8.0...HEAD (was stale at "
+    assert "v0.9.0...HEAD" in url, (
+        f"[Unreleased] compare must be based at v0.9.0...HEAD (was stale at "
         f"v0.5.0...HEAD on the v0.6.0 source); got: {url!r}"
     )
 
@@ -81,4 +90,7 @@ def test_changelog_has_link_references_for_each_release():
     )
     assert re.search(r"^\[0\.8\.0\]:\s*\S+", text, re.MULTILINE), (
         "CHANGELOG.md must define a [0.8.0] link reference"
+    )
+    assert re.search(r"^\[0\.9\.0\]:\s*\S+", text, re.MULTILINE), (
+        "CHANGELOG.md must define a [0.9.0] link reference"
     )
