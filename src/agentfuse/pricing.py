@@ -264,7 +264,9 @@ def actual_tokens(response: Any) -> int:
         return 0
 
 
-def resolve_commit_cost(response: Any, estimated_usd: float) -> tuple[float, int]:
+def resolve_commit_cost(
+    response: Any, estimated_usd: float, estimated_tokens: int = 0
+) -> tuple[float, int]:
     """Return the ``(usd, tokens)`` to commit for a finished call.
 
     Prefers the real cost / tokens read back from the response's ``Usage``
@@ -288,10 +290,21 @@ def resolve_commit_cost(response: Any, estimated_usd: float) -> tuple[float, int
     ``on_unpriced='warn-pass'`` opt-out (its pre-call estimate is ``0.0``, so
     the USD fuse still cannot bound it — by design) and leaves genuinely-free
     priced models (estimate ``0.0``) committing ``0.0``.
+
+    The last member of the same bug family (v0.9.0): a finished response that
+    carries NO usage block at all (``response.usage`` absent — common for
+    ollama / watsonx per the stream detector's docstring, and unpriceable for
+    priced models too) makes ``actual_tokens`` return 0, so the ``tokens > 0``
+    guard above never fired and the estimate was still discarded. Such a
+    response is treated exactly like the streaming no-usage branch: commit the
+    conservative pre-call estimate for BOTH ledgers — ``(estimated_usd,
+    estimated_tokens)``. A usage block that is present but reports zero tokens
+    still commits an honest ``(0.0, 0)``.
     """
     cost = actual_cost(response)
     tokens = actual_tokens(response)
-    if cost == 0.0 and tokens > 0 and estimated_usd > 0.0:
+    usage_present = getattr(response, "usage", None) is not None
+    if cost == 0.0 and estimated_usd > 0.0 and (tokens > 0 or not usage_present):
         logger.warning(
             "could not price response (model=%r) for the post-call commit; "
             "committing the pre-call estimate $%.6f so the USD fuse still "
@@ -299,5 +312,10 @@ def resolve_commit_cost(response: Any, estimated_usd: float) -> tuple[float, int
             getattr(response, "model", None) or "",
             estimated_usd,
         )
-        return float(estimated_usd), tokens
+        if tokens > 0:
+            # Usage present but unpriceable: commit the real tokens.
+            return float(estimated_usd), tokens
+        # No usage block at all: commit the pre-call token estimate too, so the
+        # cumulative token fuse still advances (mirrors the streaming fallback).
+        return float(estimated_usd), int(estimated_tokens)
     return cost, tokens

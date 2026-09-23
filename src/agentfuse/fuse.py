@@ -204,7 +204,11 @@ def commit_actual(
     if active is None:
         return 0.0
     estimated_usd = reservation.estimated_usd if reservation is not None else 0.0
-    cost, tokens = resolve_commit_cost(response, estimated_usd)
+    # Thread the pre-call token estimate too so the no-usage fallback in
+    # resolve_commit_cost can commit a non-zero token bound (mirroring the
+    # streaming no-usage fallback) and the cumulative token fuse still advances.
+    estimated_tokens = reservation.estimated_tokens if reservation is not None else 0
+    cost, tokens = resolve_commit_cost(response, estimated_usd, estimated_tokens)
     active.commit(cost, tokens, reservation=reservation)
     return cost
 
