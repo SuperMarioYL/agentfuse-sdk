@@ -91,6 +91,7 @@ def gate(
     messages: Sequence[Mapping[str, Any]],
     *,
     max_tokens: int | None = None,
+    n: int = 1,
     budget: Budget | None = None,
 ) -> float:
     """Pre-call admission check for one LLM call. Raise before any spend.
@@ -101,6 +102,9 @@ def gate(
     would cross the ceiling. If it would, prints the ``🔌 FUSE TRIPPED`` banner
     and raises :class:`~agentfuse.exceptions.BudgetExceeded` — *before* the call
     is delegated to ``litellm``, so the over-budget call is never sent.
+
+    ``n`` (the OpenAI/litellm choices parameter) multiplies the completion half
+    of the estimate so the bound stays a true upper bound for n>1 calls.
 
     Returns the estimated upper-bound cost (USD) when the call is allowed, so the
     caller can log it. Returns ``0.0`` and gates nothing when there is no active
@@ -115,6 +119,7 @@ def gate(
         model,
         messages,
         max_tokens=max_tokens,
+        n=n,
         on_unpriced=getattr(active, "on_unpriced", "block"),
     )
     try:
@@ -131,6 +136,7 @@ def gate_with_reservation(
     messages: Sequence[Mapping[str, Any]],
     *,
     max_tokens: int | None = None,
+    n: int = 1,
     budget: Budget | None = None,
 ) -> tuple[float, Reservation | None]:
     """Pre-call admission + reservation (the v0.5.0 race-free gate).
@@ -165,6 +171,7 @@ def gate_with_reservation(
         model,
         messages,
         max_tokens=max_tokens,
+        n=n,
         on_unpriced=getattr(active, "on_unpriced", "block"),
     )
     try:

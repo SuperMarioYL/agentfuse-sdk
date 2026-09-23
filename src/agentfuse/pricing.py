@@ -127,12 +127,18 @@ def estimate_call(
     messages: Sequence[Mapping[str, Any]],
     max_tokens: int | None = None,
     *,
+    n: int = 1,
     on_unpriced: OnUnpriced = DEFAULT_ON_UNPRICED,
 ) -> tuple[float, int]:
     """Estimate ``(usd_upper_bound, token_upper_bound)`` for one call, pre-send.
 
     The token bound is ``prompt_tokens`` plus a worst-case completion of
-    ``max_tokens`` (or :data:`DEFAULT_MAX_COMPLETION_TOKENS`). The USD bound
+    ``max_tokens`` (or :data:`DEFAULT_MAX_COMPLETION_TOKENS`) **per choice** —
+    ``n`` (the OpenAI/litellm choices parameter) multiplies the completion half,
+    since ``max_tokens`` applies per choice and an ``n``-choice call bills up to
+    ``n x max_tokens`` completion tokens (v0.9.0
+    ``fix-precall-estimate-ignores-n-choices``; ``n`` floors at 1 and the
+    n=1 / omitted-n estimate is bit-identical to v0.8.0). The USD bound
     prices both halves from ``litellm.model_cost``.
 
     When ``model`` is not in ``litellm.model_cost`` the behaviour is governed by
@@ -145,9 +151,10 @@ def estimate_call(
     * ``'warn-pass'`` — log a warning and return ``(0.0, token_bound)`` (the v0.1
       pass-through; the USD gate cannot block this call).
     """
+    n = max(1, int(n))
     prompt_tokens = count_prompt_tokens(model, messages)
     if max_tokens is not None and max_tokens > 0:
-        # Caller explicitly capped completion length — honour it.
+        # Caller explicitly capped completion length — honour it (per choice).
         completion_tokens = int(max_tokens)
     else:
         # No caller cap: use a genuinely conservative upper bound. Prefer the
@@ -158,7 +165,7 @@ def estimate_call(
         # not an upper bound and let streamed calls overshoot post-commit).
         model_cap = _model_max_output_tokens(model)
         completion_tokens = max(DEFAULT_MAX_COMPLETION_TOKENS, model_cap or 0)
-    token_bound = prompt_tokens + completion_tokens
+    token_bound = prompt_tokens + completion_tokens * n
 
     prices = _model_prices(model)
     if prices is None:
@@ -183,7 +190,7 @@ def estimate_call(
         return 0.0, token_bound
 
     input_price, output_price = prices
-    cost = prompt_tokens * input_price + completion_tokens * output_price
+    cost = prompt_tokens * input_price + completion_tokens * n * output_price
     return float(cost), token_bound
 
 
@@ -192,15 +199,18 @@ def estimate_prompt_cost(
     messages: Sequence[Mapping[str, Any]],
     max_tokens: int | None = None,
     *,
+    n: int = 1,
     on_unpriced: OnUnpriced = DEFAULT_ON_UNPRICED,
 ) -> float:
     """Estimate an **upper bound** on the USD cost of one call, before sending it.
 
     Thin wrapper over :func:`estimate_call` returning only the USD bound. See
     :func:`estimate_call` for the ``on_unpriced`` policy on models missing from
-    ``litellm.model_cost``.
+    ``litellm.model_cost`` and the ``n`` (choices) factor on the completion half.
     """
-    usd, _tokens = estimate_call(model, messages, max_tokens, on_unpriced=on_unpriced)
+    usd, _tokens = estimate_call(
+        model, messages, max_tokens, n=n, on_unpriced=on_unpriced
+    )
     return usd
 
 

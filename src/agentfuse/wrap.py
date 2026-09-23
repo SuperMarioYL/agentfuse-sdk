@@ -50,12 +50,14 @@ _installed = False
 
 def _extract_call_args(
     args: tuple[Any, ...], kwargs: Mapping[str, Any]
-) -> tuple[str, Sequence[Mapping[str, Any]], int | None]:
-    """Pull ``(model, messages, max_tokens)`` from a litellm-style call signature.
+) -> tuple[str, Sequence[Mapping[str, Any]], int | None, int]:
+    """Pull ``(model, messages, max_tokens, n)`` from a litellm-style call signature.
 
     ``litellm.completion(model=..., messages=...)`` is almost always called with
     keywords, but the first two positionals are ``model`` then ``messages`` too,
-    so we accept both.
+    so we accept both. ``n`` (the choices parameter) is threaded into the
+    pre-call estimate so an n>1 call is gated on a true upper bound
+    (the v0.9.0 fix-precall-estimate-ignores-n-choices fix).
     """
     model = kwargs.get("model")
     if model is None and len(args) >= 1:
@@ -64,7 +66,9 @@ def _extract_call_args(
     if messages is None and len(args) >= 2:
         messages = args[1]
     max_tokens = kwargs.get("max_tokens")
-    return str(model or ""), list(messages or []), max_tokens
+    n_val = kwargs.get("n")
+    n = int(n_val) if n_val is not None else 1
+    return str(model or ""), list(messages or []), max_tokens, n
 
 
 def completion(*args: Any, real: Callable[..., Any] | None = None, **kwargs: Any) -> Any:
@@ -80,14 +84,14 @@ def completion(*args: Any, real: Callable[..., Any] | None = None, **kwargs: Any
     reservation is released by the commit (success) or by ``release`` (error).
     """
     delegate = real if real is not None else _REAL_COMPLETION
-    model, messages, max_tokens = _extract_call_args(args, kwargs)
+    model, messages, max_tokens, n = _extract_call_args(args, kwargs)
 
     active = current_budget()
     # (1) estimate + (2) gate — raises BudgetExceeded (reserving nothing) BEFORE
     # the delegate runs; on the pass path it RESERVES the estimate so a
     # concurrent caller cannot also pass against the still-uncommitted ledger.
     estimate, reservation = gate_with_reservation(
-        model, messages, max_tokens=max_tokens, budget=active
+        model, messages, max_tokens=max_tokens, n=n, budget=active
     )
 
     try:
@@ -126,11 +130,11 @@ async def acompletion(*args: Any, real: Callable[..., Any] | None = None, **kwar
     (success) or ``release`` (error).
     """
     delegate = real if real is not None else _REAL_ACOMPLETION
-    model, messages, max_tokens = _extract_call_args(args, kwargs)
+    model, messages, max_tokens, n = _extract_call_args(args, kwargs)
 
     active = current_budget()
     estimate, reservation = gate_with_reservation(
-        model, messages, max_tokens=max_tokens, budget=active
+        model, messages, max_tokens=max_tokens, n=n, budget=active
     )
 
     try:

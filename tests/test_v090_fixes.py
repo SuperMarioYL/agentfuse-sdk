@@ -327,3 +327,88 @@ class TestUnconsumedMeteredStreamSettles:
         snap = budget.snapshot()
         assert snap.spent_tokens == 300
         assert snap.pending_usd == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------- #
+# Milestone 3: fix-precall-estimate-ignores-n-choices
+# --------------------------------------------------------------------------- #
+
+
+class TestPrecallEstimateIncludesNChoices:
+    def test_estimate_call_n_multiplies_the_completion_bound(self):
+        """n=4 must multiply the COMPLETION half of both bounds (max_tokens is
+        per choice in OpenAI/litellm semantics).
+
+        RED on v0.8.0: estimate_call had no n parameter and priced exactly one
+        completion, so the pre-call 'upper bound' was 1x of a 4x bill.
+        """
+        import litellm
+
+        from agentfuse.pricing import count_prompt_tokens
+
+        prices = litellm.model_cost[PRICED_MODEL]
+        in_cost = float(prices["input_cost_per_token"])
+        out_cost = float(prices["output_cost_per_token"])
+        prompt = count_prompt_tokens(PRICED_MODEL, MESSAGES)
+
+        usd1, tok1 = estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000)
+        usd4, tok4 = estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000, n=4)
+        assert tok1 == prompt + 1000
+        assert tok4 == prompt + 4 * 1000
+        assert usd1 == pytest.approx(prompt * in_cost + 1000 * out_cost)
+        assert usd4 == pytest.approx(prompt * in_cost + 4 * 1000 * out_cost)
+
+    def test_estimate_call_n_one_and_omitted_are_identical(self):
+        """Regression pin: n=1 (and omitted n) stay bit-identical to v0.8.0."""
+        assert estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000, n=1) == (
+            estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000)
+        )
+
+    def test_estimate_call_fallback_policy_includes_n(self):
+        """The on_unpriced='fallback' bound inherits the n factor too."""
+        usd1, tok1 = estimate_call(
+            UNPRICED_MODEL, MESSAGES, on_unpriced="fallback"
+        )
+        usd4, tok4 = estimate_call(
+            UNPRICED_MODEL, MESSAGES, n=4, on_unpriced="fallback"
+        )
+        assert tok4 == tok1 + 3 * 8192
+        assert usd4 == pytest.approx(tok4 * FALLBACK_USD_PER_TOKEN)
+
+    def test_estimate_call_floors_n_at_one(self):
+        """n=0 / negative floor at 1 instead of producing a nonsense bound."""
+        assert estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000, n=0) == (
+            estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000, n=1)
+        )
+        assert estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000, n=-3) == (
+            estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000, n=1)
+        )
+
+    def test_n_call_is_blocked_precall_when_the_n_bound_crosses_the_ceiling(self):
+        """End-to-end: an n=4 call whose 4x estimate crosses the ceiling is
+        blocked BEFORE the delegate runs, so the over-bill never happens.
+
+        RED on v0.8.0: the gate passed on the 1x estimate, the call went out,
+        and the post-call commit of the real 4x usage landed past the ceiling
+        with no retroactive trip (one-shot task overshoots).
+        """
+        est1, _tok1 = estimate_call(PRICED_MODEL, MESSAGES, max_tokens=1000)
+        ceiling = est1 * 2  # 1x estimate passes; 4x estimate crosses
+
+        called = {"n": 0}
+
+        def delegate(*args, **kwargs):
+            called["n"] += 1
+            return _FinishedResponseNoUsage(PRICED_MODEL)
+
+        with task(ceiling_usd=ceiling) as budget:
+            with pytest.raises(BudgetExceeded):
+                wrap_mod.completion(
+                    model=PRICED_MODEL,
+                    messages=MESSAGES,
+                    max_tokens=1000,
+                    n=4,
+                    real=delegate,
+                )
+        assert called["n"] == 0, "the blocked call must never reach the delegate"
+        assert budget.snapshot().spent_usd == pytest.approx(0.0)
