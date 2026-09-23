@@ -18,17 +18,28 @@ This module closes that hole. It wraps the streamed object so AgentFuse:
    when ``stream_options={"include_usage": True}``),
 3. when the stream is exhausted, commits the **real** cost if a usage block was
    seen, otherwise commits the **pre-call upper-bound estimate** so the ledger
-   still advances and the fuse still trips on the *next* call.
+   still advances and the fuse still trips on the *next* call,
+4. settles the ledger even when the caller abandons the stream: consuming ZERO
+   chunks must still commit the pre-call estimate and release the pre-call
+   :class:`~agentfuse.budget.Reservation` (v0.9.0
+   ``fix-unconsumed-metered-stream-never-settles``). The previous lazy-generator
+   implementation could never do that — a generator that is never started runs
+   no body code on close/deallocation, so its ``finally`` was unreachable and
+   the reservation stayed pinned in ``pending`` for the life of the Budget while
+   the abandoned (already-billed) call committed nothing. Settlement now lives
+   in a small wrapper class and runs on exhaustion, on a provider error,
+   on explicit ``close()`` / ``aclose()``, and in ``__del__`` — i.e. as soon as
+   the caller drops the stream, GC or not.
 
 This is pure execution-time metering — no dashboard, no visualization, no
-monitoring service. It only keeps the existing per-task ledger honest for the one
-response shape (streaming) that previously slipped past it.
+monitoring service. It only keeps the existing per-task ledger honest for the
+one response shape (streaming) that previously slipped past it.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Iterator
+from typing import Any, AsyncIterator, Iterable, Iterator
 
 from agentfuse.budget import Budget, Reservation
 from agentfuse.pricing import resolve_commit_cost
@@ -115,7 +126,7 @@ def _commit_from_chunks(
         # to the pre-call estimated_usd so the USD ledger still advances and the
         # USD ceiling holds (mirrors the no-usage fallback below) — closing the
         # v0.8.0 on_unpriced='fallback' USD-bypass gap on the streaming path.
-        cost, tokens = resolve_commit_cost(shim, estimated_usd)
+        cost, tokens = resolve_commit_cost(shim, estimated_usd, estimated_tokens)
         budget.commit(cost, tokens, reservation=reservation)
         return
     # No usage emitted by the provider — commit the conservative pre-call estimate
@@ -149,61 +160,150 @@ def _extract_usage(chunk: Any, holder: dict[str, Any]) -> None:
         holder["model"] = model
 
 
+class _MeteredStreamBase:
+    """Shared settlement logic for the sync / async metered stream wrappers.
+
+    Settlement (commit + reservation release) happens exactly once, via
+    :meth:`_settle`, and is triggered by EVERY exit path — exhaustion, a
+    provider error, explicit close, and ``__del__`` (the caller simply dropping
+    the object). Class-based settlement is what makes the zero-consumption case
+    safe: the previous lazy-generator implementation only settled if the
+    generator body had STARTED, and an unstarted generator runs no body code on
+    close/deallocation, so a never-iterated stream leaked its reservation into
+    ``pending`` forever and committed nothing for a call the provider billed.
+    """
+
+    def __init__(
+        self,
+        budget: Budget,
+        estimated_usd: float,
+        estimated_tokens: int,
+        reservation: "Reservation | None",
+    ) -> None:
+        self._budget = budget
+        self._estimated_usd = estimated_usd
+        self._estimated_tokens = estimated_tokens
+        self._reservation = reservation
+        self._holder: dict[str, Any] = {}
+        self._settled = False
+
+    def _settle(self) -> None:
+        """Commit the call's spend and release the reservation, exactly once."""
+        if self._settled:
+            return
+        self._settled = True
+        _commit_from_chunks(
+            self._budget,
+            self._holder,
+            self._estimated_usd,
+            self._estimated_tokens,
+            self._reservation,
+        )
+
+    def __del__(self) -> None:
+        # Last-resort settlement for an abandoned stream (never iterated, or
+        # dropped mid-iteration). Never raise from __del__.
+        try:
+            self._settle()
+        except Exception:  # noqa: BLE001 - __del__ must not raise
+            pass
+
+
+class _MeteredSyncStream(_MeteredStreamBase):
+    """Sync metered wrapper: iterable, settle-on-any-exit (see module docstring)."""
+
+    def __init__(self, stream: Iterable[Any], *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._iterator = iter(stream)
+
+    def __iter__(self) -> Iterator[Any]:
+        return self
+
+    def __next__(self) -> Any:
+        try:
+            chunk = next(self._iterator)
+        except BaseException:
+            # StopIteration (exhaustion) or a provider error: settle, then let
+            # the exception propagate unchanged.
+            self._settle()
+            raise
+        _extract_usage(chunk, self._holder)
+        return chunk
+
+    def close(self) -> None:
+        """Settle early (e.g. the caller is abandoning the stream)."""
+        self._settle()
+
+
+class _MeteredAsyncStream(_MeteredStreamBase):
+    """Async variant of :class:`_MeteredSyncStream`."""
+
+    def __init__(self, stream: AsyncIterator[Any], *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._iterator = stream.__aiter__()
+
+    def __aiter__(self) -> AsyncIterator[Any]:
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            chunk = await self._iterator.__anext__()
+        except BaseException:
+            # StopAsyncIteration (exhaustion) or a provider error.
+            self._settle()
+            raise
+        _extract_usage(chunk, self._holder)
+        return chunk
+
+    async def aclose(self) -> None:
+        """Settle early (e.g. the caller is abandoning the stream)."""
+        self._settle()
+
+
 def meter_sync_stream(
     stream: Iterator[Any],
     budget: Budget,
     estimated_usd: float,
     estimated_tokens: int = 0,
     reservation: "Reservation | None" = None,
-) -> Iterator[Any]:
-    """Wrap a sync streamed response so AgentFuse meters it on exhaustion.
+) -> _MeteredSyncStream:
+    """Wrap a sync streamed response so AgentFuse meters it on ANY exit.
 
-    Yields each chunk through unchanged; when the generator is fully consumed (or
-    closed), commits the real cost if a usage block was seen, else the pre-call
-    estimate. The ``reservation`` (from the v0.5.0 race-free gate) is threaded to
-    that commit so the pending estimate is released atomically with the real
-    spend; ``None`` preserves the legacy no-reservation path (e.g. direct callers
-    with no pre-call reserve).
+    Yields each chunk through unchanged; when the stream is exhausted, closed
+    early, hits a provider error, OR is simply dropped by the caller (even with
+    zero chunks consumed), commits the real cost if a usage block was seen, else
+    the pre-call estimate, and releases the threaded
+    :class:`~agentfuse.budget.Reservation`. ``None`` preserves the legacy
+    no-reservation path (e.g. direct callers with no pre-call reserve).
 
     ``estimated_tokens`` is the pre-call token upper bound (threaded from the
     reservation at the wrap.py call site) so the no-usage fallback commits a
     non-zero token estimate and the cumulative token fuse still advances on the
     dominant streamed no-usage call mode — not just the USD fuse.
+
+    .. versionchanged:: 0.9.0
+        Returns a settle-explicit wrapper object instead of a generator: a
+        generator that is never started runs no ``finally``, so a zero-consumption
+        abandoned stream could never settle its reservation (v0.9.0
+        ``fix-unconsumed-metered-stream-never-settles``). Iteration semantics
+        are unchanged.
     """
-    holder: dict[str, Any] = {}
-    committed = False
-    try:
-        for chunk in stream:
-            _extract_usage(chunk, holder)
-            yield chunk
-    finally:
-        if not committed:
-            _commit_from_chunks(
-                budget, holder, estimated_usd, estimated_tokens, reservation
-            )
-            committed = True
+    return _MeteredSyncStream(
+        stream, budget, estimated_usd, estimated_tokens, reservation
+    )
 
 
-async def meter_async_stream(
+def meter_async_stream(
     stream: AsyncIterator[Any],
     budget: Budget,
     estimated_usd: float,
     estimated_tokens: int = 0,
     reservation: "Reservation | None" = None,
-) -> AsyncIterator[Any]:
-    """Async variant of :func:`meter_sync_stream`."""
-    holder: dict[str, Any] = {}
-    committed = False
-    try:
-        async for chunk in stream:
-            _extract_usage(chunk, holder)
-            yield chunk
-    finally:
-        if not committed:
-            _commit_from_chunks(
-                budget, holder, estimated_usd, estimated_tokens, reservation
-            )
-            committed = True
+) -> _MeteredAsyncStream:
+    """Async variant of :func:`meter_sync_stream` (see it for the contract)."""
+    return _MeteredAsyncStream(
+        stream, budget, estimated_usd, estimated_tokens, reservation
+    )
 
 
 __all__ = [

@@ -172,3 +172,158 @@ class TestNoUsageFinishedResponseCommitsEstimate:
         assert snap.spent_usd == 0.0
         assert snap.spent_tokens == 0
         assert snap.pending_usd == 0.0, "the reservation must still be released"
+
+
+# --------------------------------------------------------------------------- #
+# Milestone 2: fix-unconsumed-metered-stream-never-settles
+# --------------------------------------------------------------------------- #
+
+
+class _StreamChunk:
+    def __init__(self, usage=None) -> None:
+        self.content = "x"
+        self.model = UNPRICED_MODEL
+        self.usage = usage
+
+
+class _StreamUsage:
+    def __init__(self, prompt: int, completion: int) -> None:
+        self.prompt_tokens = prompt
+        self.completion_tokens = completion
+        self.total_tokens = prompt + completion
+
+
+def _sync_stream_delegate(*args, **kwargs):
+    return iter([_StreamChunk() for _ in range(4)])
+
+
+class _AsyncStream:
+    def __init__(self) -> None:
+        self._chunks = [_StreamChunk() for _ in range(4)]
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+
+async def _async_stream_delegate(*args, **kwargs):
+    return _AsyncStream()
+
+
+class TestUnconsumedMeteredStreamSettles:
+    def test_zero_consumption_stream_settles_on_drop(self):
+        """A stream that is NEVER iterated must still settle when dropped.
+
+        RED on v0.8.0: meter_sync_stream is a generator; a generator that was
+        never started runs NO body code on close/deallocation, so the finally
+        (commit + reservation release) is unreachable — pending_usd stays
+        pinned at the estimate forever and the abandoned call (whose delegate
+        RAN and was billed) commits nothing.
+        """
+        with task(ceiling_usd=10.0, on_unpriced="fallback") as budget:
+            # Fire the call and drop the metered stream without iterating it.
+            wrap_mod.completion(
+                model=UNPRICED_MODEL,
+                messages=MESSAGES,
+                stream=True,
+                real=_sync_stream_delegate,
+            )
+        snap = budget.snapshot()
+        est_usd, est_tokens = estimate_call(
+            UNPRICED_MODEL, MESSAGES, on_unpriced="fallback"
+        )
+        assert snap.pending_usd == pytest.approx(0.0), (
+            "the reservation must not stay pinned after the stream is dropped"
+        )
+        assert snap.pending_tokens == 0
+        assert snap.spent_usd == pytest.approx(est_usd)
+        assert snap.spent_tokens == est_tokens
+
+    def test_zero_consumption_async_stream_settles_on_drop(self):
+        """Async variant: a never-iterated metered async stream must settle.
+
+        RED on v0.8.0 for the same unstarted-generator reason.
+        """
+        import asyncio
+
+        async def _fire_and_drop():
+            await wrap_mod.acompletion(
+                model=UNPRICED_MODEL,
+                messages=MESSAGES,
+                stream=True,
+                real=_async_stream_delegate,
+            )
+
+        async def _scenario():
+            with task(ceiling_usd=10.0, on_unpriced="fallback") as budget:
+                await _fire_and_drop()
+                return budget
+
+        budget = asyncio.run(_scenario())
+        snap = budget.snapshot()
+        est_usd, est_tokens = estimate_call(
+            UNPRICED_MODEL, MESSAGES, on_unpriced="fallback"
+        )
+        assert snap.pending_usd == pytest.approx(0.0)
+        assert snap.pending_tokens == 0
+        assert snap.spent_usd == pytest.approx(est_usd)
+        assert snap.spent_tokens == est_tokens
+
+    def test_close_settles_without_consuming(self):
+        """An explicit close() on a never-iterated metered stream must settle.
+
+        RED on v0.8.0: close() on an unstarted generator runs no body code.
+        """
+        with task(ceiling_usd=10.0, on_unpriced="fallback") as budget:
+            metered = wrap_mod.completion(
+                model=UNPRICED_MODEL,
+                messages=MESSAGES,
+                stream=True,
+                real=_sync_stream_delegate,
+            )
+            metered.close()
+            snap = budget.snapshot()
+        est_usd, _est_tokens = estimate_call(
+            UNPRICED_MODEL, MESSAGES, on_unpriced="fallback"
+        )
+        assert snap.pending_usd == pytest.approx(0.0)
+        assert snap.spent_usd == pytest.approx(est_usd)
+
+    def test_one_chunk_then_drop_still_settles(self):
+        """Regression pin (green on v0.8.0 too): partial consumption settles."""
+        with task(ceiling_usd=10.0, on_unpriced="fallback") as budget:
+            metered = wrap_mod.completion(
+                model=UNPRICED_MODEL,
+                messages=MESSAGES,
+                stream=True,
+                real=_sync_stream_delegate,
+            )
+            next(iter(metered))
+            del metered
+        snap = budget.snapshot()
+        est_usd, est_tokens = estimate_call(
+            UNPRICED_MODEL, MESSAGES, on_unpriced="fallback"
+        )
+        assert snap.pending_usd == pytest.approx(0.0)
+        assert snap.spent_usd == pytest.approx(est_usd)
+        assert snap.spent_tokens == est_tokens
+
+    def test_full_consume_with_usage_commits_real_usage(self):
+        """Regression pin (green on v0.8.0 too): real usage wins when emitted."""
+        usage = _StreamUsage(100, 200)
+
+        def delegate(*args, **kwargs):
+            return iter([_StreamChunk(), _StreamChunk(usage)])
+
+        with task(ceiling_usd=10.0, on_unpriced="fallback") as budget:
+            for _ in wrap_mod.completion(
+                model=UNPRICED_MODEL, messages=MESSAGES, stream=True, real=delegate
+            ):
+                pass
+        snap = budget.snapshot()
+        assert snap.spent_tokens == 300
+        assert snap.pending_usd == pytest.approx(0.0)
